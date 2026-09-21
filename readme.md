@@ -79,15 +79,21 @@ Analyzes an image and returns a text description.
   - File path: `/absolute/path/to/image.png` or `./relative/path.png`
   - `"latest"` — use the most recent image in the watched folder
   - Raw base64 string
-- `prompt` (optional): Guidance for what to focus on. Default: general description prompt.
+- `mode` (optional): Analysis mode preset. Default: `general`.
+  - `general`: Balanced description of image content
+  - `ocr`: Extract all visible text verbatim
+  - `ui-layout`: Focus on UI structure, elements, and hierarchy
+  - `error`: Identify errors, warnings, and diagnostic information
+  - `diagram`: Explain diagrams, flowcharts, and architecture
+- `prompt` (optional): Custom prompt to override the mode's default.
 
 **Example tool calls:**
 
 ```
-view_image(image: "data:image/png;base64,iVBORw0KGgo...")
 view_image(image: "/home/user/screenshots/error.png")
-view_image(image: "latest")
-view_image(image: "./diagram.png", prompt: "Explain the architecture shown in this diagram")
+view_image(image: "latest", mode: "error")
+view_image(image: "./diagram.png", mode: "diagram")
+view_image(image: "./screenshot.png", prompt: "What button should I click?")
 ```
 
 ### list_images
@@ -113,14 +119,30 @@ Analyzes the most recent image in the watched folder. Convenience tool combining
 
 **Parameters:**
 
-- `prompt` (optional): Guidance for what to focus on. Default: general description prompt.
+- `mode` (optional): Analysis mode preset. Default: `general`.
+- `prompt` (optional): Custom prompt to override the mode's default.
 
 **Example:**
 
 ```
 view_latest()
-view_latest(prompt: "What error is shown in this screenshot?")
+view_latest(mode: "error")
+view_latest(mode: "ocr")
 ```
+
+## Prompt Modes
+
+Sightline provides preset analysis modes optimized for different use cases:
+
+| Mode | Description | Best For |
+|------|-------------|----------|
+| `general` | Balanced description of image content | General screenshots, photos |
+| `ocr` | Extract all visible text verbatim | Text extraction, copying text from images |
+| `ui-layout` | Focus on UI structure and elements | UI reviews, accessibility audits |
+| `error` | Identify errors and warnings | Error messages, stack traces, logs |
+| `diagram` | Explain diagrams and architecture | Architecture diagrams, flowcharts |
+
+When using a mode, you can still provide a custom `prompt` for specific questions.
 
 ## Features
 
@@ -131,6 +153,10 @@ Results are cached in-memory using SHA-256 hashes of the image content and promp
 ### Watched Folder Integration
 
 Save screenshots to a folder and analyze them without providing paths. The server watches for new images and makes them available via `list_images` and `view_latest`.
+
+### Prompt Mode Presets
+
+Optimized analysis modes for common use cases: OCR, UI layout, error detection, and diagrams. Each mode uses a carefully crafted prompt for best results.
 
 ## Development
 
@@ -148,14 +174,11 @@ npm start        # Run the server
 
 **Phase 3 (complete):** Hash-based caching to reduce API calls.
 
+**Phase 4 (complete):** Prompt mode presets (OCR, UI layout, error-focused, diagram).
+
 **Future phases:**
-- Prompt mode presets (OCR, UI layout, error-focused)
 - Pluggable backend abstraction
 - Local model fallback (Moondream/Ollama)
-
-## License
-
-MIT
 
 ## Future Improvements
 
@@ -183,3 +206,7 @@ This would allow cache to survive MCP server restarts and reduce API calls acros
 - Load cache on server startup
 - Save cache periodically and on shutdown
 - Handle cache corruption gracefully
+
+## License
+
+MIT

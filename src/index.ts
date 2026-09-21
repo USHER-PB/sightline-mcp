@@ -11,6 +11,7 @@ import {
 import { GeminiVisionBackend } from "./gemini-backend.js";
 import { ImageWatcher } from "./image-watcher.js";
 import { imageCache } from "./cache.js";
+import { getPromptForMode, PromptMode } from "./prompt-modes.js";
 import { existsSync, mkdirSync } from "fs";
 import { resolve } from "path";
 
@@ -66,11 +67,17 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
               description:
                 "The image to analyze. Can be either a base64-encoded string, a file path, or 'latest' to use the most recent image in the watched folder. For base64, include the full data URI (e.g., 'data:image/png;base64,...'). For file paths, provide an absolute path to the image file.",
             },
+            mode: {
+              type: "string",
+              enum: ["general", "ocr", "ui-layout", "error", "diagram"],
+              description:
+                "Analysis mode preset. 'general': balanced description, 'ocr': extract all text verbatim, 'ui-layout': focus on UI structure and elements, 'error': identify errors and warnings, 'diagram': explain diagrams and architecture. Default: 'general'.",
+              default: "general",
+            },
             prompt: {
               type: "string",
               description:
-                "Optional guidance for what to focus on in the image. Examples: 'Extract all visible text', 'Describe the UI layout', 'What error is shown?', 'Summarize this diagram'",
-              default: "Describe what you see in this image, including any visible text, UI elements, or relevant details.",
+                "Optional custom prompt to override the mode's default. Use for specific questions like 'What error is shown?' or 'Summarize this diagram'.",
             },
           },
           required: ["image"],
@@ -98,11 +105,17 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
         inputSchema: {
           type: "object",
           properties: {
+            mode: {
+              type: "string",
+              enum: ["general", "ocr", "ui-layout", "error", "diagram"],
+              description:
+                "Analysis mode preset. 'general': balanced description, 'ocr': extract all text verbatim, 'ui-layout': focus on UI structure and elements, 'error': identify errors and warnings, 'diagram': explain diagrams and architecture. Default: 'general'.",
+              default: "general",
+            },
             prompt: {
               type: "string",
               description:
-                "Optional guidance for what to focus on in the image. Examples: 'Extract all visible text', 'Describe the UI layout', 'What error is shown?'",
-              default: "Describe what you see in this image, including any visible text, UI elements, or relevant details.",
+                "Optional custom prompt to override the mode's default. Use for specific questions like 'What error is shown?' or 'Summarize this diagram'.",
             },
           },
         },
@@ -151,7 +164,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
 
   // Handle view_latest tool
   if (toolName === "view_latest") {
-    const args = (request.params.arguments || {}) as { prompt?: string };
+    const args = (request.params.arguments || {}) as { mode?: PromptMode; prompt?: string };
     const latestImage = imageWatcher.getLatestImage();
 
     if (!latestImage) {
@@ -170,7 +183,8 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       throw new McpError(ErrorCode.InternalError, `Failed to read image: ${latestImage.path}`);
     }
 
-    const prompt = args.prompt || "Describe what you see in this image, including any visible text, UI elements, or relevant details.";
+    const mode = args.mode || "general";
+    const prompt = getPromptForMode(mode, args.prompt);
 
     // Check cache first
     const cached = imageCache.get(imageData.data, prompt);
@@ -179,7 +193,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         content: [
           {
             type: "text",
-            text: `**Image: ${latestImage.name}** (cached)\n\n${cached.description}`,
+            text: `**Image: ${latestImage.name}** (${mode} mode, cached)\n\n${cached.description}`,
           },
         ],
       };
@@ -199,7 +213,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       content: [
         {
           type: "text",
-          text: `**Image: ${latestImage.name}**\n\n${description}`,
+          text: `**Image: ${latestImage.name}** (${mode} mode)\n\n${description}`,
         },
       ],
     };
@@ -207,7 +221,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
 
   // Handle view_image tool
   if (toolName === "view_image") {
-    const args = request.params.arguments as { image: string; prompt?: string };
+    const args = request.params.arguments as { image: string; mode?: PromptMode; prompt?: string };
     
     if (!args.image) {
       throw new McpError(ErrorCode.InvalidParams, "image parameter is required");
@@ -269,7 +283,8 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         mimeType = undefined;
       }
 
-      const prompt = args.prompt || "Describe what you see in this image, including any visible text, UI elements, or relevant details.";
+      const mode = args.mode || "general";
+      const prompt = getPromptForMode(mode, args.prompt);
 
       // Check cache first
       const cached = imageCache.get(imageData, prompt);
@@ -278,7 +293,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
           content: [
             {
               type: "text",
-              text: `${cached.description} (cached)`,
+              text: `${cached.description} (${mode} mode, cached)`,
             },
           ],
         };
@@ -298,7 +313,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         content: [
           {
             type: "text",
-            text: description,
+            text: `${description} (${mode} mode)`,
           },
         ],
       };
