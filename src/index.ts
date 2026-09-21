@@ -8,20 +8,12 @@ import {
   ErrorCode,
   McpError,
 } from "@modelcontextprotocol/sdk/types.js";
-import { GeminiVisionBackend } from "./gemini-backend.js";
 import { ImageWatcher } from "./image-watcher.js";
 import { imageCache } from "./cache.js";
 import { getPromptForMode, PromptMode } from "./prompt-modes.js";
+import { createBackendManager, BackendManager } from "./backend-manager.js";
 import { existsSync, mkdirSync } from "fs";
 import { resolve } from "path";
-
-// Configuration
-const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
-
-if (!GEMINI_API_KEY) {
-  console.error("Error: GEMINI_API_KEY environment variable is required");
-  process.exit(1);
-}
 
 // Watched folder configuration
 const WATCH_FOLDER = process.env.SIGHTLINE_WATCH_FOLDER || resolve(process.env.HOME || "", ".sightline/images");
@@ -32,8 +24,14 @@ if (!existsSync(WATCH_FOLDER)) {
   console.error(`[Sightline] Created watch folder: ${WATCH_FOLDER}`);
 }
 
-// Initialize vision backend
-const visionBackend = new GeminiVisionBackend(GEMINI_API_KEY);
+// Initialize backend manager with fallback support
+let backendManager: BackendManager;
+try {
+  backendManager = createBackendManager();
+} catch (error) {
+  console.error(`Error: ${error instanceof Error ? error.message : String(error)}`);
+  process.exit(1);
+}
 
 // Initialize image watcher
 const imageWatcher = new ImageWatcher(WATCH_FOLDER);
@@ -42,7 +40,7 @@ const imageWatcher = new ImageWatcher(WATCH_FOLDER);
 const server = new Server(
   {
     name: "sightline-mcp",
-    version: "0.1.0",
+    version: "0.2.0",
   },
   {
     capabilities: {
@@ -199,21 +197,17 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       };
     }
 
-    // Call vision backend
-    const description = await visionBackend.describe(
-      imageData.data,
-      prompt,
-      imageData.mimeType
-    );
+    // Call backend with fallback
+    const result = await backendManager.describe(imageData.data, prompt, imageData.mimeType);
 
     // Store in cache
-    imageCache.set(imageData.data, prompt, description, imageData.mimeType);
+    imageCache.set(imageData.data, prompt, result.description, imageData.mimeType);
 
     return {
       content: [
         {
           type: "text",
-          text: `**Image: ${latestImage.name}** (${mode} mode)\n\n${description}`,
+          text: `**Image: ${latestImage.name}** (${mode} mode, via ${result.backend})\n\n${result.description}`,
         },
       ],
     };
@@ -299,21 +293,17 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         };
       }
 
-      // Call vision backend
-      const description = await visionBackend.describe(
-        imageData,
-        prompt,
-        mimeType
-      );
+      // Call backend with fallback
+      const result = await backendManager.describe(imageData, prompt, mimeType);
 
       // Store in cache
-      imageCache.set(imageData, prompt, description, mimeType || "image/png");
+      imageCache.set(imageData, prompt, result.description, mimeType || "image/png");
 
       return {
         content: [
           {
             type: "text",
-            text: `${description} (${mode} mode)`,
+            text: `${result.description} (${mode} mode, via ${result.backend})`,
           },
         ],
       };
@@ -335,6 +325,7 @@ async function main() {
   await server.connect(transport);
   console.error("Sightline MCP server running on stdio");
   console.error(`[Sightline] Watched folder: ${WATCH_FOLDER}`);
+  console.error(`[Sightline] Available backends: ${backendManager.listBackends().join(", ")}`);
 }
 
 main().catch((error) => {

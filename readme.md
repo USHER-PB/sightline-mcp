@@ -6,7 +6,7 @@ Enables vision capabilities for non-vision-capable coding agents via the Model C
 
 ## What it does
 
-When a coding agent runs on a model without vision support, it can't process images that users paste into conversations. Sightline acts as a vision proxy — the agent calls the `view_image` tool, Sightline sends the image to Gemini's API, and returns a text description the agent can read.
+When a coding agent runs on a model without vision support, it can't process images that users paste into conversations. Sightline acts as a vision proxy — the agent calls the `view_image` tool, Sightline sends the image to a vision backend (Gemini API or local Ollama), and returns a text description the agent can read.
 
 ## Installation
 
@@ -17,13 +17,53 @@ npm run build
 
 ## Configuration
 
-Set the `GEMINI_API_KEY` environment variable:
+### Required: Vision Backend
+
+Sightline supports multiple vision backends with automatic fallback.
+
+**Option 1: Gemini API (Cloud)**
 
 ```bash
 export GEMINI_API_KEY=your_api_key_here
 ```
 
 Get a Gemini API key from [Google AI Studio](https://aistudio.google.com/app/apikey).
+
+**Option 2: Ollama (Local, Offline)**
+
+```bash
+# Install Ollama
+curl -fsSL https://ollama.com/install.sh | sh
+
+# Pull a vision model
+ollama pull moondream
+
+# Optional: Configure Ollama
+export OLLAMA_BASE_URL=http://localhost:11434
+export OLLAMA_VISION_MODEL=moondream
+```
+
+Supported Ollama models: `moondream`, `llava`, `bakllava`, `cogvlm`
+
+**Option 3: Both (with Fallback)**
+
+```bash
+export GEMINI_API_KEY=your_api_key_here
+# Ollama will be used as fallback if Gemini fails
+```
+
+Configure backend order:
+
+```bash
+# Gemini primary, Ollama fallback (default)
+export SIGHTLINE_BACKENDS=gemini,ollama
+
+# Ollama primary, Gemini fallback
+export SIGHTLINE_BACKENDS=ollama,gemini
+
+# Ollama only (offline mode)
+export SIGHTLINE_BACKENDS=ollama
+```
 
 ### Optional: Watched Folder
 
@@ -35,8 +75,6 @@ export SIGHTLINE_WATCH_FOLDER=/home/user/screenshots
 
 Default: `~/.sightline/images`
 
-When configured, any images saved to this folder are automatically detected and can be analyzed using `view_latest` or `list_images`.
-
 ### Optional: Cache Configuration
 
 Control the in-memory cache behavior:
@@ -46,11 +84,9 @@ export SIGHTLINE_CACHE_MAX_SIZE=100      # Max cached images (default: 100)
 export SIGHTLINE_CACHE_TTL_MS=86400000   # Cache TTL in ms (default: 24 hours)
 ```
 
-The cache reduces API calls by storing results keyed by image hash and prompt.
-
 ## Usage with MCP Clients
 
-Add to your MCP client configuration (e.g., Claude Code, OpenCode):
+Add to your MCP client configuration (e.g., Claude Code, OpenCode, Kiro):
 
 ```json
 {
@@ -60,6 +96,23 @@ Add to your MCP client configuration (e.g., Claude Code, OpenCode):
       "args": ["/path/to/sightline-mcp/dist/index.js"],
       "env": {
         "GEMINI_API_KEY": "your_api_key_here"
+      }
+    }
+  }
+}
+```
+
+For offline/local-only:
+
+```json
+{
+  "mcpServers": {
+    "sightline": {
+      "command": "node",
+      "args": ["/path/to/sightline-mcp/dist/index.js"],
+      "env": {
+        "SIGHTLINE_BACKENDS": "ollama",
+        "OLLAMA_VISION_MODEL": "moondream"
       }
     }
   }
@@ -142,21 +195,48 @@ Sightline provides preset analysis modes optimized for different use cases:
 | `error` | Identify errors and warnings | Error messages, stack traces, logs |
 | `diagram` | Explain diagrams and architecture | Architecture diagrams, flowcharts |
 
-When using a mode, you can still provide a custom `prompt` for specific questions.
+## Vision Backends
+
+### Gemini (Cloud)
+
+- **Pros**: High quality, fast, good free tier
+- **Cons**: Requires API key, internet connection
+- **Models**: `gemini-2.5-flash` (default)
+- **Free tier**: 15 RPM, 1M tokens/day
+
+### Ollama (Local)
+
+- **Pros**: Offline, no API key, unlimited usage
+- **Cons**: Requires local setup, slower on CPU
+- **Models**: `moondream` (recommended), `llava`, `bakllava`
+- **Setup**: `ollama pull moondream`
+
+### Automatic Fallback
+
+When both backends are configured, Sightline automatically falls back:
+
+1. Primary backend fails (quota exceeded, network error)
+2. Automatically switches to next available backend
+3. Logs the fallback to console
+4. Returns which backend was used in response
 
 ## Features
 
+### Pluggable Vision Backends
+
+Support for multiple vision providers with automatic fallback. Start with Gemini's free tier, fall back to local Ollama when needed.
+
 ### Hash-based Caching
 
-Results are cached in-memory using SHA-256 hashes of the image content and prompt. This reduces API calls when the same image is analyzed multiple times in a session. Cache hits return instantly with a `(cached)` indicator.
+Results are cached in-memory using SHA-256 hashes. Same image + prompt = instant cache hit, no API call.
 
 ### Watched Folder Integration
 
-Save screenshots to a folder and analyze them without providing paths. The server watches for new images and makes them available via `list_images` and `view_latest`.
+Save screenshots to a folder and analyze them without providing paths. The server watches for new images automatically.
 
 ### Prompt Mode Presets
 
-Optimized analysis modes for common use cases: OCR, UI layout, error detection, and diagrams. Each mode uses a carefully crafted prompt for best results.
+Optimized analysis modes for common use cases: OCR, UI layout, error detection, and diagrams.
 
 ## Development
 
@@ -176,9 +256,7 @@ npm start        # Run the server
 
 **Phase 4 (complete):** Prompt mode presets (OCR, UI layout, error-focused, diagram).
 
-**Future phases:**
-- Pluggable backend abstraction
-- Local model fallback (Moondream/Ollama)
+**Phase 5 (complete):** Pluggable backend abstraction with local model fallback.
 
 ## Future Improvements
 
@@ -188,24 +266,17 @@ Currently, the cache is in-memory only and resets on server restart. Future vers
 
 **Option 1: File-based**
 ```bash
-# Cache persisted to disk
 ~/.sightline/cache.json
 ```
 
 **Option 2: SQLite**
 ```bash
-# Local database for cache
 ~/.sightline/cache.db
 ```
 
-This would allow cache to survive MCP server restarts and reduce API calls across sessions.
+### Clipboard Monitoring
 
-**Implementation notes:**
-- Use the existing `ImageCache` interface
-- Add `load()` and `save()` methods
-- Load cache on server startup
-- Save cache periodically and on shutdown
-- Handle cache corruption gracefully
+Auto-detect images copied to clipboard without manual save steps.
 
 ## License
 
