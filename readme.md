@@ -156,3 +156,30 @@ npm start        # Run the server
 ## License
 
 MIT
+
+## Future Improvements
+
+### Persistent Cache Storage
+
+Currently, the cache is in-memory only and resets on server restart. Future versions should implement persistent storage:
+
+**Option 1: File-based**
+```bash
+# Cache persisted to disk
+~/.sightline/cache.json
+```
+
+**Option 2: SQLite**
+```bash
+# Local database for cache
+~/.sightline/cache.db
+```
+
+This would allow cache to survive MCP server restarts and reduce API calls across sessions.
+
+**Implementation notes:**
+- Use the existing `ImageCache` interface
+- Add `load()` and `save()` methods
+- Load cache on server startup
+- Save cache periodically and on shutdown
+- Handle cache corruption gracefully
