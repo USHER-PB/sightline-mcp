@@ -10,6 +10,7 @@ import {
 } from "@modelcontextprotocol/sdk/types.js";
 import { GeminiVisionBackend } from "./gemini-backend.js";
 import { ImageWatcher } from "./image-watcher.js";
+import { imageCache } from "./cache.js";
 import { existsSync, mkdirSync } from "fs";
 import { resolve } from "path";
 
@@ -169,11 +170,30 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       throw new McpError(ErrorCode.InternalError, `Failed to read image: ${latestImage.path}`);
     }
 
+    const prompt = args.prompt || "Describe what you see in this image, including any visible text, UI elements, or relevant details.";
+
+    // Check cache first
+    const cached = imageCache.get(imageData.data, prompt);
+    if (cached) {
+      return {
+        content: [
+          {
+            type: "text",
+            text: `**Image: ${latestImage.name}** (cached)\n\n${cached.description}`,
+          },
+        ],
+      };
+    }
+
+    // Call vision backend
     const description = await visionBackend.describe(
       imageData.data,
-      args.prompt || "Describe what you see in this image, including any visible text, UI elements, or relevant details.",
+      prompt,
       imageData.mimeType
     );
+
+    // Store in cache
+    imageCache.set(imageData.data, prompt, description, imageData.mimeType);
 
     return {
       content: [
@@ -249,12 +269,30 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         mimeType = undefined;
       }
 
+      const prompt = args.prompt || "Describe what you see in this image, including any visible text, UI elements, or relevant details.";
+
+      // Check cache first
+      const cached = imageCache.get(imageData, prompt);
+      if (cached) {
+        return {
+          content: [
+            {
+              type: "text",
+              text: `${cached.description} (cached)`,
+            },
+          ],
+        };
+      }
+
       // Call vision backend
       const description = await visionBackend.describe(
         imageData,
-        args.prompt || "Describe what you see in this image, including any visible text, UI elements, or relevant details.",
+        prompt,
         mimeType
       );
+
+      // Store in cache
+      imageCache.set(imageData, prompt, description, mimeType || "image/png");
 
       return {
         content: [

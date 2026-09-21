@@ -37,6 +37,17 @@ Default: `~/.sightline/images`
 
 When configured, any images saved to this folder are automatically detected and can be analyzed using `view_latest` or `list_images`.
 
+### Optional: Cache Configuration
+
+Control the in-memory cache behavior:
+
+```bash
+export SIGHTLINE_CACHE_MAX_SIZE=100      # Max cached images (default: 100)
+export SIGHTLINE_CACHE_TTL_MS=86400000   # Cache TTL in ms (default: 24 hours)
+```
+
+The cache reduces API calls by storing results keyed by image hash and prompt.
+
 ## Usage with MCP Clients
 
 Add to your MCP client configuration (e.g., Claude Code, OpenCode):
@@ -111,6 +122,16 @@ view_latest()
 view_latest(prompt: "What error is shown in this screenshot?")
 ```
 
+## Features
+
+### Hash-based Caching
+
+Results are cached in-memory using SHA-256 hashes of the image content and prompt. This reduces API calls when the same image is analyzed multiple times in a session. Cache hits return instantly with a `(cached)` indicator.
+
+### Watched Folder Integration
+
+Save screenshots to a folder and analyze them without providing paths. The server watches for new images and makes them available via `list_images` and `view_latest`.
+
 ## Development
 
 ```bash
@@ -125,8 +146,9 @@ npm start        # Run the server
 
 **Phase 2 (complete):** Watched folder for automatic screenshot detection, list_images and view_latest tools.
 
+**Phase 3 (complete):** Hash-based caching to reduce API calls.
+
 **Future phases:**
-- Hash-based caching to reduce API calls
 - Prompt mode presets (OCR, UI layout, error-focused)
 - Pluggable backend abstraction
 - Local model fallback (Moondream/Ollama)
