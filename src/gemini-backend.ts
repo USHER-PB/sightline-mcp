@@ -1,24 +1,25 @@
 import { GoogleGenerativeAI, GenerativeModel, Part } from "@google/generative-ai";
 import { VisionBackend, GeminiOptions } from "./vision-backend.js";
+import { errorMessage } from "./errors.js";
+
+export const DEFAULT_GEMINI_MODEL = "gemini-2.5-flash";
+export const GEMINI_MODEL_ENV = "GEMINI_VISION_MODEL";
 
 /**
- * Gemini API implementation of the vision backend
+ * Gemini API implementation of the vision backend.
  */
 export class GeminiVisionBackend implements VisionBackend {
   readonly name = "Gemini";
-  readonly isAvailable: boolean;
-  private model: GenerativeModel;
+  private readonly model: GenerativeModel;
 
-  constructor(apiKey: string, options?: Partial<GeminiOptions>) {
-    if (!apiKey) {
-      this.isAvailable = false;
-      throw new Error("GEMINI_API_KEY is required for Gemini backend");
+  constructor(options: GeminiOptions) {
+    if (!options?.apiKey) {
+      throw new Error("GEMINI_API_KEY is required for the Gemini backend");
     }
-    
-    this.isAvailable = true;
-    const genAI = new GoogleGenerativeAI(apiKey);
-    this.model = genAI.getGenerativeModel({ 
-      model: options?.model || "gemini-2.5-flash" 
+
+    const genAI = new GoogleGenerativeAI(options.apiKey);
+    this.model = genAI.getGenerativeModel({
+      model: options.model || DEFAULT_GEMINI_MODEL,
     });
   }
 
@@ -39,8 +40,7 @@ export class GeminiVisionBackend implements VisionBackend {
       const response = await result.response;
       return response.text();
     } catch (error) {
-      const errorMessage = error instanceof Error ? error.message : String(error);
-      throw new Error(`Gemini API error: ${errorMessage}`);
+      throw new Error(`Gemini API error: ${errorMessage(error)}`);
     }
   }
 }

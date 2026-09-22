@@ -1,25 +1,40 @@
+import { errorMessage } from "./errors.js";
 import { VisionBackend, OllamaOptions } from "./vision-backend.js";
 
+export const DEFAULT_OLLAMA_BASE_URL = "http://localhost:11434";
+export const DEFAULT_OLLAMA_MODEL = "moondream";
+export const OLLAMA_BASE_URL_ENV = "OLLAMA_BASE_URL";
+export const OLLAMA_MODEL_ENV = "OLLAMA_VISION_MODEL";
+
+/** Model families that can actually accept images. */
+const VISION_MODEL_HINTS = ["moondream", "llava", "bakllava", "cogvlm"];
+
 /**
- * Ollama implementation of the vision backend
- * Supports local models like LLaVA, Moondream, BakLLaVA
+ * Ollama implementation of the vision backend.
+ * Supports local models like LLaVA, Moondream, BakLLaVA.
  */
 export class OllamaVisionBackend implements VisionBackend {
   readonly name = "Ollama";
-  readonly isAvailable: boolean;
-  private baseUrl: string;
-  private model: string;
+  private readonly baseUrl: string;
+  private readonly model: string;
 
-  constructor(options?: Partial<OllamaOptions>) {
-    this.baseUrl = options?.baseUrl || process.env.OLLAMA_BASE_URL || "http://localhost:11434";
-    this.model = options?.model || process.env.OLLAMA_VISION_MODEL || "moondream";
-    this.isAvailable = true; // Will be checked on first use
+  constructor(options?: OllamaOptions) {
+    this.baseUrl = options?.baseUrl || process.env[OLLAMA_BASE_URL_ENV] || DEFAULT_OLLAMA_BASE_URL;
+    this.model = options?.model || process.env[OLLAMA_MODEL_ENV] || DEFAULT_OLLAMA_MODEL;
+  }
+
+  get baseURL(): string {
+    return this.baseUrl;
+  }
+
+  get visionModel(): string {
+    return this.model;
   }
 
   async describe(
     imageBase64: string,
     prompt: string,
-    mimeType: string = "image/png"
+    _mimeType: string = "image/png"
   ): Promise<string> {
     try {
       const response = await fetch(`${this.baseUrl}/api/generate`, {
@@ -40,60 +55,55 @@ export class OllamaVisionBackend implements VisionBackend {
         throw new Error(`Ollama API error (${response.status}): ${errorText}`);
       }
 
-      const data = await response.json();
+      const data = (await response.json()) as { response?: string };
       return data.response || "No response from Ollama";
     } catch (error) {
-      const errorMessage = error instanceof Error ? error.message : String(error);
-      
-      // Check if it's a connection error
-      if (errorMessage.includes("ECONNREFUSED") || errorMessage.includes("fetch failed")) {
-        throw new Error(
-          `Ollama not running at ${this.baseUrl}. Start Ollama with: ollama serve`
-        );
-      }
-      
-      throw new Error(`Ollama error: ${errorMessage}`);
+      throw new Error(this.describeFailure(error));
     }
   }
 
   /**
-   * Check if Ollama is running and the model is available
+   * Turn a raw failure into an actionable message (connection refused vs. an
+   * error reported by the Ollama server itself).
    */
-  async checkAvailability(): Promise<boolean> {
-    try {
-      const response = await fetch(`${this.baseUrl}/api/tags`);
-      if (!response.ok) return false;
-      
-      const data = await response.json();
-      const models = data.models || [];
-      return models.some((m: { name: string }) => 
-        m.name.includes(this.model) || m.name.includes("moondream") || m.name.includes("llava")
-      );
-    } catch {
-      return false;
+  private describeFailure(error: unknown): string {
+    const message = errorMessage(error);
+
+    if (message.includes("ECONNREFUSED") || message.includes("fetch failed")) {
+      return `Ollama not running at ${this.baseUrl}. Start Ollama with: ollama serve`;
     }
+
+    if (message.startsWith("Ollama API error")) {
+      return message;
+    }
+
+    return `Ollama error: ${message}`;
   }
 
   /**
-   * List available vision models in Ollama
+   * Check whether Ollama is reachable and the configured vision model is
+   * installed.
+   */
+  async probe(): Promise<boolean> {
+    const models = await this.listModels();
+    if (models.length === 0) return false;
+    return models.some((name) => name.includes(this.model));
+  }
+
+  /**
+   * All installed Ollama models that look vision-capable.
    */
   async listModels(): Promise<string[]> {
     try {
       const response = await fetch(`${this.baseUrl}/api/tags`);
       if (!response.ok) return [];
-      
-      const data = await response.json();
-      const models = data.models || [];
-      
-      // Filter for vision-capable models
-      const visionModels = models.filter((m: { name: string }) => 
-        m.name.includes("moondream") || 
-        m.name.includes("llava") || 
-        m.name.includes("bakllava") ||
-        m.name.includes("cogvlm")
-      );
-      
-      return visionModels.map((m: { name: string }) => m.name);
+
+      const data = (await response.json()) as { models?: { name?: string }[] };
+      const models = data.models ?? [];
+
+      return models
+        .map((model) => model.name ?? "")
+        .filter((name) => VISION_MODEL_HINTS.some((hint) => name.includes(hint)));
     } catch {
       return [];
     }
