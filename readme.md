@@ -336,6 +336,278 @@ persistence state, and which vision backends are currently available.
 cache_status()
 ```
 
+## Recipes: What You Can Do Now
+
+Concrete examples of what an agent (or you, driving the tools by hand) can do
+with each feature. Tool calls are written in the same shorthand an MCP client
+sends; everything here works against a running server with at least one
+backend configured.
+
+### 1. Understand any screenshot you paste
+
+**You:** *"What's on this screenshot?"* (pastes a PNG as a data URI)
+
+```
+view_image(image: "data:image/png;base64,iVBORw0KGgo...")
+→ **Image: inline image** (general mode, via Gemini)
+
+A settings dialog titled "Privacy". A toggle labeled "Usage analytics" is
+switched off. Below it is a warning in orange: "Changes take effect after
+restart"...
+```
+
+The agent now knows what it "saw" and can answer questions about it — no
+vision-capable model required.
+
+### 2. The zero-friction screenshot loop
+
+**Setup:** `export SIGHTLINE_WATCH_FOLDER=~/screenshots` — take screenshots
+with your OS shortcut, then just ask:
+
+**You:** *"Look at my latest screenshot."*
+
+```
+view_latest(mode: "error")
+→ **Image: shot-2026-09-22-1015.png** (error mode, via Ollama)
+
+Error: ECONNREFUSED 127.0.0.1:5432 — the Postgres connection was refused...
+```
+
+No paths, no file names, no pasting — saving the screenshot is the whole
+workflow. Ask again and the answer comes back `(cached)` instantly.
+
+### 3. Grab text out of an image (OCR)
+
+**You:** *"Copy the text from this photo of the whiteboard."*
+
+```
+view_image(image: "./whiteboard.png", mode: "ocr")
+→ Sprint Planning
+  - Migrate auth service (Priya, 3 pts)
+  - Fix flaky checkout test (Marco, 2 pts)
+  ...
+```
+
+Verbatim transcription in reading order — paste it into notes, a ticket, or a
+file the agent writes for you.
+
+### 4. Debug from a crash screenshot
+
+**You:** *"Why did this fail?"* (screenshots the terminal)
+
+```
+view_image(image: "latest", mode: "error")
+→ TypeError: Cannot read properties of undefined (reading 'map')
+    at renderList (App.tsx:42:18)
+```
+
+The `error` mode extracts the message, type, file, and line number — enough
+for the agent to jump straight to `App.tsx:42` and propose a fix.
+
+### 5. Have an architecture diagram explained
+
+**You:** *"What does this diagram describe?"*
+
+```
+view_image(image: "./infra.png", mode: "diagram")
+→ A Kubernetes ingress topology: traffic enters via NGINX (top), fans out to
+  three services (auth, orders, billing)...
+```
+
+### 6. Review a UI change
+
+**You:** *"How is this settings page structured?"*
+
+```
+view_image(image: "./settings.png", mode: "ui-layout")
+→ Two-column layout: left nav (5 items, "Advanced" selected), right panel
+  with 3 grouped sections...
+```
+
+### 7. Find a UI element, then zoom into it (two-step precision)
+
+Tiny text or a small widget? Locate it first, then analyze just that region:
+
+```
+view_image(image: "./dashboard.png", mode: "ui-elements")
+→ structuredContent: elements: [
+    { label: "Export CSV", role: "button",
+      box: { x: 0.87, y: 0.04, w: 0.09, h: 0.03 } }, ...
+  ]
+
+# Boxes are normalized 0-1; convert to pixels for a 1600x900 screenshot:
+view_image(image: "./dashboard.png",
+           region: { x: 1392, y: 36, width: 144, height: 27 }, mode: "ocr")
+→ "Export CSV"
+```
+
+`ui-elements` finds it, `region` reads it — the crop-and-analyze happens
+server-side in one call, no image editor needed.
+
+### 8. Extract a crop as a reusable image
+
+**You:** *"Cut out the top banner and keep it as its own image."*
+
+```
+crop_image(image: "./page.png", region: { x: 0, y: 0, width: 800, height: 120 },
+           save: true)
+→ **Image: page.png [region 800x120 at 0,0]** (crop 800x120 at 0,0 of 1600x900)
+   Saved to .../derived/page-...png (2.1 KB)
+   [returns the cropped image itself as an image block]
+```
+
+The text carries the crop's data URI (pipe it back into `view_image`), the
+image block shows the result, and `save: true` files it under `derived/`
+for later. Source must be PNG.
+
+### 9. Before/after comparison (visual regression)
+
+**You:** *"I changed the signup form — what actually looks different?"*
+
+```
+compare_images(images: ["./before.png", "./after.png"])
+→ **Image: before.png, after.png** (general mode, 2 images, via Gemini)
+
+Identical: page header, footer, field order.
+Changed: the "Sign up" button is now primary blue (was grey); a new
+"Accept terms" checkbox appears above the button in Image 2 only...
+```
+
+Both images go to the model **in one call** with an `Image 1 = ...`
+legend, so every statement names the screenshot it applies to. Ask the same
+question again — it's a cache hit, zero API calls.
+
+### 10. Ask a custom question instead of getting a description
+
+**You:** *"Is the 'Delete account' button visible without scrolling?"*
+
+```
+view_image(image: "~/Desktop/profile.png",
+           prompt: "Is a 'Delete account' button visible? Where exactly?")
+→ "Yes — bottom-left of the visible area, in red text, below 'Sign out'..."
+```
+
+The custom prompt **replaces** the mode's preset, so you get exactly the
+question answered.
+
+### 11. Pull a value out of an image, as JSON an agent can use
+
+**You:** *"Extract the build number, commit hash, and status from this
+badge as structured data."*
+
+```
+view_image(image: "./badge.png", output: "json",
+           prompt: "Extract build number, commit hash, and status as JSON.")
+→ content:          { "build": "1842", "commit": "af41578", "status": "passing" }
+   structuredContent: { build: "1842", commit: "af41578", status: "passing" }
+```
+
+`structuredContent` is machine-readable MCP output — the agent can branch on
+`status === "passing"` without regex-scraping prose. Fenced/prose-wrapped
+JSON from the model is tolerated; if all else fails you still get the text.
+
+### 12. Stage a pasted image into the workflow
+
+**You:** (pastes a diagram as a data URI) *"Save this so we can refer to it
+later."*
+
+```
+save_image(image: "data:image/png;base64,...", filename: "proposed-arch")
+→ **Image saved** to .../proposed-arch.png (48.3 KB, image/png).
+   Discoverable via list_images and the 'latest' selector.
+```
+
+Now this file is addressable by name while `"latest"` keeps tracking your
+screenshots — and the extension is fixed up from the actual bytes, so a JPEG
+saved as `.png` still lands as `.jpg`.
+
+### 13. Work with several images at once
+
+```
+list_images(limit: 5)
+→ 1. error-1015.png (24.5 KB, modified: 2026-09-22T10:15:02Z)
+   2. ui-before.png (88.1 KB, modified: 2026-09-22T09:02:44Z)
+   ...
+
+view_image(image: "latest:2", mode: "ocr")   # the one before the newest
+```
+
+`latest:N` reaches back through history without computing paths; combining
+two selectors gives an ad-hoc pair for `compare_images`:
+
+```
+compare_images(images: ["latest:2", "latest"])   # previous vs current
+```
+
+### 14. Watch several folders at once
+
+```
+export SIGHTLINE_WATCH_FOLDER=~/screenshots,~/Downloads/captures
+```
+
+Screenshots land in one folder, CI artifact dumps in another — `list_images`,
+`"latest"`, and `"save_image"` (primary folder) see them all as one stream.
+
+### 15. Keep API spend under control
+
+No configuration needed for the basics — identical questions return
+`(cached)` from the LRU cache, **which now survives restarts** (flushed to
+`~/.sightline/cache.json` on shutdown, restored on boot). To shape the spend
+further:
+
+```
+export SIGHTLINE_CACHE_MAX_SIZE=500        # remember more
+export SIGHTLINE_CACHE_TTL_MS=604800000    # for a week instead of a day
+export SIGHTLINE_MAX_CONCURRENT=1          # never parallel-hit the API
+export SIGHTLINE_MIN_INTERVAL_MS=500       # space calls at 2/sec max
+```
+
+The throttle queues an agent that fires ten tool calls at once — they execute
+one by one instead of burning ten quota units in the same second.
+
+### 16. Check the system's health mid-session
+
+```
+cache_status()
+→ Cache
+     entries: 42 / 100 (persisted: yes)
+     hits: 17 | misses: 25 | evictions: 0 | expired: 3
+     ttl: 86400000ms
+   Backends
+     Gemini: available
+     Ollama: unavailable (Ollama not running at http://localhost:11434...)
+   ...
+```
+
+Instant answer to *"why is this slow / why did it say 'all backends
+failed'?"* — cache effectiveness and per-backend health in one call.
+
+### 17. Run fully offline
+
+```
+export SIGHTLINE_BACKENDS=ollama        # no API key, no internet
+export OLLAMA_VISION_MODEL=llava
+```
+
+Same seven tools, same modes, same cache — descriptions come from your own
+machine. Add `gemini` back into `SIGHTLINE_BACKENDS` and a failure of either
+one falls through to the other automatically.
+
+### 18. Trust the errors enough to self-correct
+
+An agent (or you) mistyping a mode, pointing at a deleted file, or requesting
+a 9-image comparison gets a specific, actionable error — not a stack trace:
+
+```
+view_image(image: "latest", mode: "errror")
+→ InvalidParams: Unknown mode "errror".
+   Valid modes: general, ocr, ui-layout, ui-elements, error, diagram.
+```
+
+Every bad input (unknown mode, missing file, unsupported format like SVG,
+oversized payload, duplicate/undersized comparison) arrives as
+`InvalidParams` with a hint, so the next call can simply be correct.
+
 ## Prompt Modes
 
 Sightline provides preset analysis modes optimized for different use cases:
