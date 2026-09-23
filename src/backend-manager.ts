@@ -2,12 +2,19 @@ import { VisionBackend } from "./vision-backend.js";
 import { GeminiVisionBackend, DEFAULT_GEMINI_MODEL, GEMINI_MODEL_ENV } from "./gemini-backend.js";
 import { OllamaVisionBackend, OLLAMA_BASE_URL_ENV, OLLAMA_MODEL_ENV } from "./ollama-backend.js";
 import { errorMessage, SightlineError } from "./errors.js";
-import { EnvLike, readOptionalEnv } from "./env.js";
+import { EnvLike, readNonNegativeIntEnv, readOptionalEnv, readPositiveIntEnv } from "./env.js";
+import { RequestThrottle, ThrottleOptions, ThrottleStats } from "./throttle.js";
+import { DescribeRequest } from "./vision-backend.js";
 
 export type BackendType = "gemini" | "ollama";
 
 export const BACKEND_TYPES: BackendType[] = ["gemini", "ollama"];
 export const BACKEND_ORDER_ENV = "SIGHTLINE_BACKENDS";
+export const MAX_CONCURRENT_ENV = "SIGHTLINE_MAX_CONCURRENT";
+export const MIN_INTERVAL_ENV = "SIGHTLINE_MIN_INTERVAL_MS";
+
+export const DEFAULT_MAX_CONCURRENT = 1;
+export const DEFAULT_MIN_INTERVAL_MS = 0;
 
 export interface BackendManagerConfig {
   /** Preferred backend order (first = primary, rest = fallbacks) */
@@ -60,12 +67,18 @@ const DEFAULT_FACTORIES: Record<BackendType, BackendFactory> = {
 export class BackendManager {
   private readonly backends: VisionBackend[] = [];
   private readonly availability = new Map<string, BackendStatus>();
+  private readonly throttle: RequestThrottle;
   private currentBackendIndex = 0;
 
   constructor(
     config: BackendManagerConfig,
-    factories: Partial<Record<BackendType, BackendFactory>> = DEFAULT_FACTORIES
+    factories: Partial<Record<BackendType, BackendFactory>> = DEFAULT_FACTORIES,
+    throttleOptions: ThrottleOptions = {
+      maxConcurrent: DEFAULT_MAX_CONCURRENT,
+      minIntervalMs: DEFAULT_MIN_INTERVAL_MS,
+    }
   ) {
+    this.throttle = new RequestThrottle(throttleOptions);
     for (const backendType of config.backends) {
       const factory = factories[backendType];
 
@@ -106,9 +119,10 @@ export class BackendManager {
    */
   static async create(
     config: BackendManagerConfig,
-    factories: Partial<Record<BackendType, BackendFactory>> = DEFAULT_FACTORIES
+    factories: Partial<Record<BackendType, BackendFactory>> = DEFAULT_FACTORIES,
+    throttleOptions?: ThrottleOptions
   ): Promise<BackendManager> {
-    const manager = new BackendManager(config, factories);
+    const manager = new BackendManager(config, factories, throttleOptions);
     await manager.refreshAvailability();
     return manager;
   }
@@ -143,17 +157,27 @@ export class BackendManager {
   }
 
   /**
-   * Analyze an image, falling back to the next backend on failure. Failures
-   * from every backend are reported, not just the last one.
+   * Analyze one or more images, falling back to the next backend on failure.
+   * Failures from every backend are reported, not just the last one. Calls are
+   * serialised through the throttle so parallel tool calls cannot exhaust an
+   * API quota or thrash a local model.
    */
-  async describe(imageBase64: string, prompt: string, mimeType?: string): Promise<DescribeResult> {
+  async describe(request: DescribeRequest): Promise<DescribeResult> {
+    if (request.images.length === 0) {
+      throw new SightlineError("invalid_input", "At least one image is required.");
+    }
+
+    return this.throttle.run(() => this.runWithFallback(request));
+  }
+
+  private async runWithFallback(request: DescribeRequest): Promise<DescribeResult> {
     const failures: string[] = [];
 
     for (let i = 0; i < this.backends.length; i++) {
       const backend = this.backends[i];
 
       try {
-        const description = await backend.describe(imageBase64, prompt, mimeType);
+        const description = await backend.describe(request);
         this.currentBackendIndex = i;
         this.availability.set(backend.name, { name: backend.name, available: true });
         return { description, backend: backend.name };
@@ -178,6 +202,13 @@ export class BackendManager {
       `All vision backends failed.\n${failures.map((failure) => `- ${failure}`).join("\n")}`,
       "Check GEMINI_API_KEY / internet access, or run 'ollama serve' with a vision model installed."
     );
+  }
+
+  /**
+   * Current throttle state, for startup logging and diagnostics.
+   */
+  throttleStats(): ThrottleStats {
+    return this.throttle.stats();
   }
 
   /**
@@ -246,7 +277,11 @@ export function createBackendManager(
       ollamaBaseUrl: readOptionalEnv(OLLAMA_BASE_URL_ENV, env),
       ollamaModel: readOptionalEnv(OLLAMA_MODEL_ENV, env),
     },
-    factories
+    factories,
+    {
+      maxConcurrent: readPositiveIntEnv(MAX_CONCURRENT_ENV, DEFAULT_MAX_CONCURRENT, env),
+      minIntervalMs: readNonNegativeIntEnv(MIN_INTERVAL_ENV, DEFAULT_MIN_INTERVAL_MS, env),
+    }
   );
 }
 

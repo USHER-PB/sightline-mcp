@@ -2,6 +2,7 @@ import { readFile, stat } from "fs/promises";
 import { homedir } from "os";
 import { basename, join, resolve as resolvePath } from "path";
 import { errorMessage, SightlineError } from "./errors.js";
+import { CropRegion } from "./png.js";
 import {
   formatBytes,
   isSupportedImageMimeType,
@@ -32,6 +33,8 @@ export interface ResolvedImage {
 
 export interface LatestImageProvider {
   getLatestImage(): { path: string; name: string } | null;
+  /** Newest-first list, used to resolve `latest:N` selectors. */
+  listImages(): { path: string; name: string }[];
 }
 
 export interface ResolveImageOptions {
@@ -40,11 +43,15 @@ export interface ResolveImageOptions {
   maxBytes?: number;
 }
 
+/** Maximum number of images in a single `compare_images` call. */
+export const MAX_IMAGES_PER_REQUEST = 8;
+
 const DATA_URI_PATTERN =
   /^data:([A-Za-z0-9!#$&^_.+-]+\/[A-Za-z0-9!#$&^_.+-]+);base64,([A-Za-z0-9+/=\s]+)$/;
 const BASE64_CHARS_PATTERN = /^[A-Za-z0-9+/=\s]+$/;
 /** Any real image encodes to more than this many base64 characters. */
 const MIN_AUTO_BASE64_LENGTH = 64;
+const LATEST_PATTERN = /^latest(?::(\d+))?$/i;
 
 const INPUT_HINT =
   "Pass 'latest', an image data URI (data:image/png;base64,...), a file path (absolute, relative, or ~/...), or a raw base64 image.";
@@ -72,16 +79,8 @@ export async function resolveImageInput(
 
   const raw = input.trim();
 
-  if (raw.toLowerCase() === "latest") {
-    const latest = options.latestImageProvider?.getLatestImage();
-    if (!latest) {
-      throw new SightlineError(
-        "not_found",
-        "No images found in the watched folder.",
-        "Save a screenshot to the watched folder, or set SIGHTLINE_WATCH_FOLDER to the folder you save images to."
-      );
-    }
-    return readImageFile(latest.path, maxBytes, "latest");
+  if (LATEST_PATTERN.test(raw)) {
+    return readImageFile(resolveLatestSelector(raw, options.latestImageProvider), maxBytes, "latest");
   }
 
   if (/^data:/i.test(raw)) {
@@ -106,6 +105,129 @@ export async function resolveImageInput(
   }
 
   return readImageFile(expandHome(raw), maxBytes, "file");
+}
+
+/**
+ * Resolve a `latest` / `latest:N` selector (N is 1-based, 1 = most recent).
+ */
+function resolveLatestSelector(selector: string, provider?: LatestImageProvider): string {
+  const match = LATEST_PATTERN.exec(selector);
+  const index = match?.[1] ? Number(match[1]) : 1;
+
+  const images = provider?.listImages() ?? [];
+
+  if (images.length === 0) {
+    throw new SightlineError(
+      "not_found",
+      "No images found in the watched folder(s).",
+      "Save a screenshot to the watched folder, or set SIGHTLINE_WATCH_FOLDER to the folder you save images to."
+    );
+  }
+
+  if (index < 1 || index > images.length) {
+    throw new SightlineError(
+      "invalid_input",
+      `Selector "${selector}" is out of range: only ${images.length} image(s) are available.`,
+      "Use \"latest\" for the most recent image, or \"latest:2\" for the one before it."
+    );
+  }
+
+  return images[index - 1].path;
+}
+
+/**
+ * Resolve a list of images for a multi-image request (comparison). Duplicate
+ * inputs are rejected, since comparing an image with itself is always a
+ * mistake.
+ */
+export async function resolveImageInputs(
+  input: unknown,
+  options: ResolveImageOptions = {}
+): Promise<ResolvedImage[]> {
+  if (!Array.isArray(input)) {
+    throw new SightlineError(
+      "invalid_input",
+      "The `images` parameter must be an array of image references.",
+      `Pass between 2 and ${MAX_IMAGES_PER_REQUEST} entries: ${INPUT_HINT}`
+    );
+  }
+
+  if (input.length < 2) {
+    throw new SightlineError(
+      "invalid_input",
+      "At least 2 images are required to compare.",
+      `Pass between 2 and ${MAX_IMAGES_PER_REQUEST} entries.`
+    );
+  }
+
+  if (input.length > MAX_IMAGES_PER_REQUEST) {
+    throw new SightlineError(
+      "invalid_input",
+      `Too many images: ${input.length} (maximum ${MAX_IMAGES_PER_REQUEST}).`,
+      "Compare fewer images per call, or run several comparisons."
+    );
+  }
+
+  const images = await Promise.all(input.map((entry) => resolveImageInput(entry, options)));
+
+  const seen = new Map<string, string>();
+  for (const image of images) {
+    const existing = seen.get(image.data);
+    if (existing) {
+      throw new SightlineError(
+        "invalid_input",
+        `Duplicate image in the comparison: "${image.label}" appears more than once${existing === image.label ? "" : ` (same bytes as "${existing}")`}.`,
+        "Pass distinct images to compare."
+      );
+    }
+    seen.set(image.data, image.label);
+  }
+
+  return images;
+}
+
+/**
+ * Validate a crop/zoom rectangle coming from a tool call.
+ */
+export function parseRegion(value: unknown): CropRegion {
+  if (value === undefined || value === null) {
+    throw new SightlineError("invalid_input", "A region must be provided.");
+  }
+
+  if (typeof value !== "object" || Array.isArray(value)) {
+    throw new SightlineError(
+      "invalid_input",
+      "The `region` must be an object with x, y, width, and height.",
+      "Example: {\"x\": 100, \"y\": 40, \"width\": 320, \"height\": 200}"
+    );
+  }
+
+  const record = value as Record<string, unknown>;
+  const region = {
+    x: Number(record.x),
+    y: Number(record.y),
+    width: Number(record.width),
+    height: Number(record.height),
+  };
+
+  for (const [key, number] of Object.entries(region)) {
+    if (!Number.isFinite(number) || number < 0) {
+      throw new SightlineError(
+        "invalid_input",
+        `Region "${key}" must be a non-negative number (received ${JSON.stringify(record[key])}).`
+      );
+    }
+  }
+
+  if (region.width < 1 || region.height < 1) {
+    throw new SightlineError(
+      "invalid_input",
+      "Region width and height must be at least 1 pixel.",
+      "Example: {\"x\": 100, \"y\": 40, \"width\": 320, \"height\": 200}"
+    );
+  }
+
+  return region;
 }
 
 function decodeDataUri(raw: string, maxBytes: number): ResolvedImage {

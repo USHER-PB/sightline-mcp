@@ -7,6 +7,8 @@ import { isSupportedImageExtension } from "./image-formats.js";
 export interface ImageInfo {
   path: string;
   name: string;
+  /** Folder this image was found in. */
+  folder: string;
   size: number;
   createdAt: Date;
   modifiedAt: Date;
@@ -19,23 +21,29 @@ export interface RefreshResult {
 }
 
 /**
- * Discovers image files in a folder. Discovery is index-based: the index is
- * rebuilt on demand by `refresh()`, and `fs.watch` is a fast path on top of it,
- * so a missed filesystem event can never leave the tool stuck with a stale
- * list.
+ * Discovers image files in one or more folders. Discovery is index-based: the
+ * index is rebuilt on demand by `refresh()`, and `fs.watch` is a fast path on
+ * top of it, so a missed filesystem event can never leave the tool stuck with
+ * a stale list.
  */
 export class ImageWatcher {
-  private watcher: FSWatcher | null = null;
-  private readonly watchPath: string;
+  private watchers: FSWatcher[] = [];
+  private readonly watchPaths: string[];
   private knownImages = new Map<string, ImageInfo>();
   private started = false;
 
-  constructor(watchPath: string) {
-    this.watchPath = watchPath;
+  constructor(watchPaths: string | string[]) {
+    this.watchPaths = (Array.isArray(watchPaths) ? watchPaths : [watchPaths]).map((path) =>
+      path.trim()
+    );
+  }
+
+  get paths(): string[] {
+    return [...this.watchPaths];
   }
 
   get path(): string {
-    return this.watchPath;
+    return this.watchPaths[0] ?? "";
   }
 
   /**
@@ -51,54 +59,61 @@ export class ImageWatcher {
   }
 
   /**
-   * Stop watching the folder.
+   * Stop watching every folder.
    */
   stop(): void {
-    if (!this.watcher) return;
-    try {
-      this.watcher.close();
-    } catch {
-      // Already closed - nothing to do.
+    for (const watcher of this.watchers) {
+      try {
+        watcher.close();
+      } catch {
+        // Already closed - nothing to do.
+      }
     }
-    this.watcher = null;
+    this.watchers = [];
     this.started = false;
   }
 
   private openWatcher(): void {
-    try {
-      this.watcher = watch(this.watchPath, { persistent: false }, (eventType, filename) => {
-        void this.handleEvent(eventType, filename);
-      });
+    for (const folder of this.watchPaths) {
+      try {
+        const watcher = watch(folder, { persistent: false }, (eventType, filename) => {
+          void this.handleEvent(folder, eventType, filename);
+        });
 
-      this.watcher.on("error", (error) => {
+        watcher.on("error", (error) => {
+          console.error(
+            `[ImageWatcher] Watch error on ${folder}: ${errorMessage(error)}. Retrying.`
+          );
+          this.reopenWatcher();
+        });
+
+        this.watchers.push(watcher);
+        console.error(`[ImageWatcher] Watching folder: ${folder}`);
+      } catch (error) {
         console.error(
-          `[ImageWatcher] Watch error on ${this.watchPath}: ${errorMessage(error)}. Retrying.`
+          `[ImageWatcher] Cannot watch ${folder}: ${errorMessage(error)}. Images are still picked up on each tool call.`
         );
-        this.reopenWatcher();
-      });
-
-      console.error(`[ImageWatcher] Watching folder: ${this.watchPath}`);
-    } catch (error) {
-      this.watcher = null;
-      console.error(
-        `[ImageWatcher] Cannot watch ${this.watchPath}: ${errorMessage(error)}. Images are still picked up on each tool call.`
-      );
+      }
     }
   }
 
   private reopenWatcher(): void {
-    if (this.watcher) {
+    for (const watcher of this.watchers) {
       try {
-        this.watcher.close();
+        watcher.close();
       } catch {
-        // Ignore: the watcher is being replaced anyway.
+        // Ignore: the watchers are being replaced anyway.
       }
     }
-    this.watcher = null;
+    this.watchers = [];
     this.openWatcher();
   }
 
-  private async handleEvent(eventType: string, filename: string | null): Promise<void> {
+  private async handleEvent(
+    folder: string,
+    eventType: string,
+    filename: string | null
+  ): Promise<void> {
     if (!filename) {
       // Some platforms report anonymous events; rescan to stay accurate.
       await this.refresh();
@@ -107,12 +122,14 @@ export class ImageWatcher {
 
     if (!isSupportedImageExtension(filename)) return;
 
-    const filePath = join(this.watchPath, filename);
-    const info = await this.getImageInfo(filePath);
+    const filePath = join(folder, filename);
+    const info = await this.getImageInfo(folder, filePath);
 
     if (info) {
       this.knownImages.set(filePath, info);
-      console.error(`[ImageWatcher] Detected ${eventType === "change" ? "change in" : "new image"}: ${filename}`);
+      console.error(
+        `[ImageWatcher] Detected ${eventType === "change" ? "change in" : "new image"}: ${filename}`
+      );
       return;
     }
 
@@ -123,37 +140,40 @@ export class ImageWatcher {
 
   /**
    * Rebuild the image index from the filesystem, dropping entries whose files
-   * are gone and picking up files that appeared without a watch event.
+   * are gone and picking up files that appeared without a watch event. All
+   * watched folders are scanned; subfolders are not.
    */
   async refresh(): Promise<RefreshResult> {
-    let files: string[];
-    try {
-      files = await readdir(this.watchPath);
-    } catch (error) {
-      console.error(`[ImageWatcher] Error scanning folder: ${errorMessage(error)}`);
-      return { added: 0, removed: 0, total: this.knownImages.size };
-    }
-
     const next = new Map<string, ImageInfo>();
     let added = 0;
 
-    for (const file of files) {
-      if (!isSupportedImageExtension(file)) continue;
-
-      const filePath = join(this.watchPath, file);
-      const info = await this.getImageInfo(filePath);
-      if (!info) continue;
-
-      const previous = this.knownImages.get(filePath);
-      if (
-        !previous ||
-        previous.size !== info.size ||
-        previous.modifiedAt.getTime() !== info.modifiedAt.getTime()
-      ) {
-        added++;
+    for (const folder of this.watchPaths) {
+      let files: string[];
+      try {
+        files = await readdir(folder);
+      } catch (error) {
+        console.error(`[ImageWatcher] Error scanning folder ${folder}: ${errorMessage(error)}`);
+        continue;
       }
 
-      next.set(filePath, info);
+      for (const file of files) {
+        if (!isSupportedImageExtension(file)) continue;
+
+        const filePath = join(folder, file);
+        const info = await this.getImageInfo(folder, filePath);
+        if (!info) continue;
+
+        const previous = this.knownImages.get(filePath);
+        if (
+          !previous ||
+          previous.size !== info.size ||
+          previous.modifiedAt.getTime() !== info.modifiedAt.getTime()
+        ) {
+          added++;
+        }
+
+        next.set(filePath, info);
+      }
     }
 
     const removed = [...this.knownImages.keys()].filter((path) => !next.has(path)).length;
@@ -172,7 +192,7 @@ export class ImageWatcher {
    * Info about a single image file, or null when it is missing or not a
    * regular file.
    */
-  private async getImageInfo(filePath: string): Promise<ImageInfo | null> {
+  private async getImageInfo(folder: string, filePath: string): Promise<ImageInfo | null> {
     try {
       const stats = await stat(filePath);
       if (!stats.isFile()) return null;
@@ -180,6 +200,7 @@ export class ImageWatcher {
       return {
         path: filePath,
         name: basename(filePath),
+        folder,
         size: stats.size,
         createdAt: stats.birthtime,
         modifiedAt: stats.mtime,

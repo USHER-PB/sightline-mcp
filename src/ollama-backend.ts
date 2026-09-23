@@ -1,5 +1,5 @@
 import { errorMessage } from "./errors.js";
-import { VisionBackend, OllamaOptions } from "./vision-backend.js";
+import { DescribeRequest, VisionBackend, OllamaOptions } from "./vision-backend.js";
 
 export const DEFAULT_OLLAMA_BASE_URL = "http://localhost:11434";
 export const DEFAULT_OLLAMA_MODEL = "moondream";
@@ -31,11 +31,11 @@ export class OllamaVisionBackend implements VisionBackend {
     return this.model;
   }
 
-  async describe(
-    imageBase64: string,
-    prompt: string,
-    _mimeType: string = "image/png"
-  ): Promise<string> {
+  async describe(request: DescribeRequest): Promise<string> {
+    if (request.images.length === 0) {
+      throw new Error("Ollama backend requires at least one image");
+    }
+
     try {
       const response = await fetch(`${this.baseUrl}/api/generate`, {
         method: "POST",
@@ -44,8 +44,8 @@ export class OllamaVisionBackend implements VisionBackend {
         },
         body: JSON.stringify({
           model: this.model,
-          prompt: prompt,
-          images: [imageBase64],
+          prompt: request.prompt,
+          images: request.images.map((image) => image.data),
           stream: false,
         }),
       });

@@ -1,9 +1,28 @@
 import { GoogleGenerativeAI, GenerativeModel, Part } from "@google/generative-ai";
-import { VisionBackend, GeminiOptions } from "./vision-backend.js";
+import { DescribeRequest, VisionBackend, GeminiOptions } from "./vision-backend.js";
 import { errorMessage } from "./errors.js";
 
 export const DEFAULT_GEMINI_MODEL = "gemini-2.5-flash";
 export const GEMINI_MODEL_ENV = "GEMINI_VISION_MODEL";
+
+/**
+ * Build the Gemini request parts: the prompt followed by every image.
+ * Exported so it can be tested without touching the network.
+ */
+export function buildGeminiRequest(request: DescribeRequest): (string | Part)[] {
+  const parts: (string | Part)[] = [request.prompt];
+
+  for (const image of request.images) {
+    parts.push({
+      inlineData: {
+        data: image.data,
+        mimeType: image.mimeType,
+      },
+    });
+  }
+
+  return parts;
+}
 
 /**
  * Gemini API implementation of the vision backend.
@@ -23,20 +42,13 @@ export class GeminiVisionBackend implements VisionBackend {
     });
   }
 
-  async describe(
-    imageBase64: string,
-    prompt: string,
-    mimeType: string = "image/png"
-  ): Promise<string> {
-    const imagePart: Part = {
-      inlineData: {
-        data: imageBase64,
-        mimeType,
-      },
-    };
+  async describe(request: DescribeRequest): Promise<string> {
+    if (request.images.length === 0) {
+      throw new Error("Gemini backend requires at least one image");
+    }
 
     try {
-      const result = await this.model.generateContent([prompt, imagePart]);
+      const result = await this.model.generateContent(buildGeminiRequest(request));
       const response = await result.response;
       return response.text();
     } catch (error) {

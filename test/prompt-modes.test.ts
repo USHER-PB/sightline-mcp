@@ -2,9 +2,12 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { SightlineError } from "../src/errors.js";
 import {
+  buildComparisonPrompt,
+  COMPARISON_PROMPT,
   describeModes,
   getPromptForMode,
   isPromptMode,
+  modeImpliesJson,
   parsePromptMode,
   PROMPT_MODE_NAMES,
   PROMPT_MODES,
@@ -72,5 +75,28 @@ test("describeModes mentions every mode and its description", () => {
   for (const mode of PROMPT_MODE_NAMES) {
     assert.ok(described.includes(`'${mode}'`), `describeModes must mention ${mode}`);
     assert.ok(described.includes(PROMPT_MODES[mode].description));
+  }
+});
+
+test("buildComparisonPrompt labels every image", () => {
+  const prompt = buildComparisonPrompt(["before.png", "after.png"], "general");
+  assert.ok(prompt.includes(COMPARISON_PROMPT));
+  assert.ok(prompt.includes("Image 1 = before.png"));
+  assert.ok(prompt.includes("Image 2 = after.png"));
+});
+
+test("buildComparisonPrompt lets a custom prompt replace the default", () => {
+  const prompt = buildComparisonPrompt(["a.png", "b.png"], "general", "Which one is newer?");
+  assert.ok(prompt.startsWith("Which one is newer?"));
+  assert.ok(prompt.includes("Image 1 = a.png"));
+  assert.ok(prompt.includes("Image 2 = b.png"));
+});
+
+test("modeImpliesJson is true only for JSON-native modes", () => {
+  assert.equal(modeImpliesJson("ui-elements"), true);
+  for (const mode of PROMPT_MODE_NAMES) {
+    if (mode !== "ui-elements") {
+      assert.equal(modeImpliesJson(mode), false, `${mode} must default to text output`);
+    }
   }
 });

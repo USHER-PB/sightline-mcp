@@ -1,4 +1,24 @@
 /**
+ * One image handed to a backend.
+ */
+export interface ImagePayload {
+  /** Base64 payload, without any data URI prefix. */
+  data: string;
+  mimeType: string;
+  /** Label used when the backend supports referring to images by name. */
+  label?: string;
+}
+
+/**
+ * A single analysis request. Multi-image requests (comparisons) carry every
+ * image in one call so the model can relate them to each other.
+ */
+export interface DescribeRequest {
+  prompt: string;
+  images: ImagePayload[];
+}
+
+/**
  * Vision backend interface - enables pluggable vision providers.
  *
  * A backend does not report availability itself: whether a provider can serve
@@ -9,13 +29,9 @@ export interface VisionBackend {
   readonly name: string;
 
   /**
-   * Analyze an image and return a text description.
-   * @param imageBase64 - Base64-encoded image data (no data URI prefix)
-   * @param prompt - The analysis prompt
-   * @param mimeType - MIME type of the image (e.g., "image/png")
-   * @returns Text description of the image
+   * Analyze one or more images and return a text response.
    */
-  describe(imageBase64: string, prompt: string, mimeType?: string): Promise<string>;
+  describe(request: DescribeRequest): Promise<string>;
 
   /**
    * Optional startup check: can this backend reach its provider right now?

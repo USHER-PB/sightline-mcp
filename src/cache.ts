@@ -1,5 +1,12 @@
 import { createHash } from "crypto";
-import { EnvLike, readPositiveIntEnv } from "./env.js";
+import { EnvLike, readBoolEnv, readPositiveIntEnv, resolveCacheFile } from "./env.js";
+import {
+  CacheStore,
+  CACHE_FILE_ENV,
+  CACHE_PERSIST_ENV,
+  FileCacheStore,
+  PersistedCacheEntry,
+} from "./cache-store.js";
 
 export interface CacheEntry {
   hash: string;
@@ -26,10 +33,15 @@ export interface ImageCacheOptions {
   ttlMs: number;
   /** Injectable clock, used by tests. */
   now: () => number;
+  /** Optional backing store so results survive a restart. */
+  store?: CacheStore;
+  /** Debounce (ms) before a change is written to the store. */
+  flushDebounceMs: number;
 }
 
 export const DEFAULT_CACHE_MAX_SIZE = 100;
 export const DEFAULT_CACHE_TTL_MS = 24 * 60 * 60 * 1000;
+export const DEFAULT_FLUSH_DEBOUNCE_MS = 1000;
 
 /**
  * In-memory, least-recently-used cache of vision results. A hit requires the
@@ -41,6 +53,11 @@ export class ImageCache {
   private readonly maxSize: number;
   private readonly ttlMs: number;
   private readonly now: () => number;
+  private readonly store?: CacheStore;
+  private readonly flushDebounceMs: number;
+
+  private flushTimer: NodeJS.Timeout | null = null;
+  private dirty = false;
 
   private hits = 0;
   private misses = 0;
@@ -51,6 +68,36 @@ export class ImageCache {
     this.maxSize = options.maxSize ?? DEFAULT_CACHE_MAX_SIZE;
     this.ttlMs = options.ttlMs ?? DEFAULT_CACHE_TTL_MS;
     this.now = options.now ?? Date.now;
+    this.store = options.store;
+    this.flushDebounceMs = options.flushDebounceMs ?? DEFAULT_FLUSH_DEBOUNCE_MS;
+
+    if (this.store) this.hydrate();
+  }
+
+  /**
+   * Load previously persisted results, dropping anything already expired or
+   * beyond the configured size.
+   */
+  private hydrate(): void {
+    const entries = this.store?.load() ?? [];
+    const usable = entries
+      .filter((entry) => this.now() - entry.timestamp <= this.ttlMs)
+      .sort((a, b) => a.timestamp - b.timestamp)
+      .slice(-this.maxSize);
+
+    for (const entry of usable) {
+      this.cache.set(entry.key, {
+        hash: entry.key.substring(0, 16),
+        prompt: entry.prompt,
+        description: entry.description,
+        timestamp: entry.timestamp,
+        mimeType: entry.mimeType,
+      });
+    }
+
+    if (usable.length > 0) {
+      console.error(`[ImageCache] Restored ${usable.length} cached result(s) from disk`);
+    }
   }
 
   private generateKey(imageBase64: string, prompt: string): string {
@@ -114,6 +161,8 @@ export class ImageCache {
       timestamp: this.now(),
       mimeType,
     });
+
+    this.markDirty();
   }
 
   /**
@@ -129,11 +178,69 @@ export class ImageCache {
         cleared++;
       }
     }
+
+    if (cleared > 0) this.markDirty();
     return cleared;
   }
 
   clear(): void {
     this.cache.clear();
+    this.markDirty();
+  }
+
+  /**
+   * Write pending changes to the backing store right now.
+   */
+  flush(): void {
+    if (!this.store || !this.dirty) return;
+
+    if (this.flushTimer) {
+      clearTimeout(this.flushTimer);
+      this.flushTimer = null;
+    }
+
+    this.store.save(this.snapshot());
+    this.dirty = false;
+  }
+
+  /**
+   * Flush pending changes and stop watching for more. Call on shutdown.
+   */
+  stopPersistence(): void {
+    this.flush();
+    if (this.flushTimer) {
+      clearTimeout(this.flushTimer);
+      this.flushTimer = null;
+    }
+  }
+
+  private markDirty(): void {
+    if (!this.store) return;
+    this.dirty = true;
+
+    if (this.flushTimer) return;
+    this.flushTimer = setTimeout(() => {
+      this.flushTimer = null;
+      this.flush();
+    }, this.flushDebounceMs);
+    this.flushTimer.unref?.();
+  }
+
+  private snapshot(): PersistedCacheEntry[] {
+    return [...this.cache.entries()]
+      .filter(([, entry]) => !this.isExpired(entry))
+      .map(([key, entry]) => ({
+        key,
+        prompt: entry.prompt,
+        description: entry.description,
+        mimeType: entry.mimeType,
+        timestamp: entry.timestamp,
+      }));
+  }
+
+  /** Whether results are persisted to disk. */
+  hasPersistence(): boolean {
+    return this.store !== undefined;
   }
 
   stats(): CacheStats {
@@ -169,11 +276,22 @@ export class ImageCache {
 
 /**
  * Build a cache from the environment, falling back to safe defaults for
- * missing or malformed values.
+ * missing or malformed values. Persistence is on by default; set
+ * `SIGHTLINE_CACHE_PERSIST=0` for a purely in-memory cache.
  */
 export function createImageCacheFromEnv(env: EnvLike = process.env): ImageCache {
-  return new ImageCache({
-    maxSize: readPositiveIntEnv("SIGHTLINE_CACHE_MAX_SIZE", DEFAULT_CACHE_MAX_SIZE, env),
-    ttlMs: readPositiveIntEnv("SIGHTLINE_CACHE_TTL_MS", DEFAULT_CACHE_TTL_MS, env),
-  });
+  const persist = readBoolEnv(CACHE_PERSIST_ENV, true, env);
+  const maxSize = readPositiveIntEnv("SIGHTLINE_CACHE_MAX_SIZE", DEFAULT_CACHE_MAX_SIZE, env);
+  const ttlMs = readPositiveIntEnv("SIGHTLINE_CACHE_TTL_MS", DEFAULT_CACHE_TTL_MS, env);
+
+  let store: CacheStore | undefined;
+  if (persist) {
+    const filePath = resolveCacheFile(env);
+    store = new FileCacheStore(filePath);
+    console.error(`[Sightline] Persistent cache: ${filePath} (disable with ${CACHE_PERSIST_ENV}=0)`);
+  }
+
+  return new ImageCache({ maxSize, ttlMs, store });
 }
+
+export { CACHE_FILE_ENV, CACHE_PERSIST_ENV };

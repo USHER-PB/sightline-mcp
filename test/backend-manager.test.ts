@@ -38,7 +38,10 @@ test("uses the primary backend when it works", async () => {
     factoryFor(backend("Primary", succeed("primary result")), backend("Secondary", succeed("secondary")))
   );
 
-  const result = await manager.describe("base64", "prompt", "image/png");
+  const result = await manager.describe({
+    prompt: "prompt",
+    images: [{ data: "base64", mimeType: "image/png" }],
+  });
   assert.equal(result.backend, "Primary");
   assert.equal(result.description, "primary result");
   assert.equal(manager.currentBackend.name, "Primary");
@@ -56,7 +59,10 @@ test("falls back to the next backend and remembers it", async () => {
       )
     );
 
-    const result = await manager.describe("base64", "prompt", "image/png");
+    const result = await manager.describe({
+      prompt: "prompt",
+      images: [{ data: "base64", mimeType: "image/png" }],
+    });
     assert.equal(result.backend, "Secondary");
     assert.equal(manager.currentBackend.name, "Secondary");
 
@@ -78,7 +84,10 @@ test("reports every backend failure when all of them fail", async () => {
     );
 
     try {
-      await manager.describe("base64", "prompt", "image/png");
+      await manager.describe({
+        prompt: "prompt",
+        images: [{ data: "base64", mimeType: "image/png" }],
+      });
       assert.fail("expected describe to reject");
     } catch (error) {
       assert.ok(error instanceof SightlineError);

@@ -44,7 +44,10 @@ test("posts the prompt and image to Ollama and returns the description", async (
 
   try {
     const backend = new OllamaVisionBackend({ baseUrl: "http://ollama.test:1234", model: "llava" });
-    const description = await backend.describe("BASE64DATA", "describe this", "image/png");
+    const description = await backend.describe({
+      prompt: "describe this",
+      images: [{ data: "BASE64DATA", mimeType: "image/png" }],
+    });
 
     assert.equal(description, "a cat on a keyboard");
     assert.equal(fake.calls.length, 1);
@@ -65,7 +68,10 @@ test("falls back to a placeholder when Ollama returns no text", async () => {
 
   try {
     const backend = new OllamaVisionBackend();
-    assert.equal(await backend.describe("BASE64DATA", "prompt"), "No response from Ollama");
+    assert.equal(
+      await backend.describe({ prompt: "prompt", images: [{ data: "BASE64DATA", mimeType: "image/png" }] }),
+      "No response from Ollama"
+    );
   } finally {
     fake.restore();
   }
@@ -79,7 +85,11 @@ test("surfaces HTTP errors from Ollama", async () => {
   try {
     const backend = new OllamaVisionBackend();
     await assert.rejects(
-      () => backend.describe("BASE64DATA", "prompt"),
+      () =>
+        backend.describe({
+          prompt: "prompt",
+          images: [{ data: "BASE64DATA", mimeType: "image/png" }],
+        }),
       /Ollama API error \(404\): model 'llava' not found/
     );
   } finally {
@@ -95,7 +105,11 @@ test("turns connection failures into an actionable message", async () => {
   try {
     const backend = new OllamaVisionBackend({ baseUrl: "http://localhost:11434" });
     await assert.rejects(
-      () => backend.describe("BASE64DATA", "prompt"),
+      () =>
+        backend.describe({
+          prompt: "prompt",
+          images: [{ data: "BASE64DATA", mimeType: "image/png" }],
+        }),
       /Ollama not running at http:\/\/localhost:11434\. Start Ollama with: ollama serve/
     );
   } finally {
@@ -158,7 +172,7 @@ test("reads the base URL and model from the environment by default", async () =>
     assert.equal(backend.baseURL, "http://env-ollama:9999");
     assert.equal(backend.visionModel, "bakllava");
 
-    await backend.describe("BASE64DATA", "prompt");
+    await backend.describe({ prompt: "prompt", images: [{ data: "BASE64DATA", mimeType: "image/png" }] });
     assert.equal(fake.calls[0].url, "http://env-ollama:9999/api/generate");
   } finally {
     fake.restore();

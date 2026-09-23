@@ -1,6 +1,9 @@
 import { SightlineError } from "./errors.js";
 
-export type PromptMode = "general" | "ocr" | "ui-layout" | "error" | "diagram";
+export type PromptMode = "general" | "ocr" | "ui-layout" | "ui-elements" | "error" | "diagram";
+
+/** Modes that only make sense as structured output. */
+export const JSON_PROMPT_MODES: PromptMode[] = ["ui-elements"];
 
 export interface PromptModeConfig {
   name: string;
@@ -28,6 +31,12 @@ export const PROMPT_MODES: Record<PromptMode, PromptModeConfig> = {
     description: "focus on UI structure, elements, and hierarchy",
     prompt:
       "Analyze the UI layout and structure of this image. Describe: 1) The overall layout and sections, 2) All UI elements (buttons, inputs, menus, etc.) with their labels, 3) The visual hierarchy and flow, 4) Any notable design patterns or components. Focus on the interface structure, not content.",
+  },
+  "ui-elements": {
+    name: "UI Elements (JSON)",
+    description: "locate interactive elements with normalized bounding boxes (JSON)",
+    prompt:
+      'Locate every interactive or labelled UI element in this image and return JSON only in this shape: {"image":{"width":<pixels>,"height":<pixels>},"elements":[{"label":"<visible text or accessible name>","role":"button|input|link|menu|tab|icon|text|other","box":{"x":<0-1>,"y":<0-1>,"w":<0-1>,"h":<0-1>}}]}. Boxes are normalised to the image size with the origin (0,0) at the top-left corner. Include elements from top to bottom, left to right. Do not add commentary.',
   },
   error: {
     name: "Error Detection",
@@ -84,4 +93,30 @@ export function getPromptForMode(mode: PromptMode, customPrompt?: string): strin
 /** Single-line summary of every mode, used to build tool descriptions. */
 export function describeModes(): string {
   return PROMPT_MODE_NAMES.map((name) => `'${name}': ${PROMPT_MODES[name].description}`).join(", ");
+}
+
+/**
+ * Default prompt for multi-image comparisons, placed before the comparison
+ * target list so the model knows which image is which.
+ */
+export const COMPARISON_PROMPT =
+  "Compare these images and report what is identical, what differs, and which image each statement applies to (refer to them as Image 1, Image 2, and so on). Cover visible text, layout, state, and any change that looks unintentional. Be specific and do not invent details that are not visible.";
+
+/**
+ * Resolve the prompt for a multi-image request: the comparison prompt (or the
+ * selected mode) plus an explicit list of what each image is.
+ */
+export function buildComparisonPrompt(
+  labels: string[],
+  mode: PromptMode,
+  customPrompt?: string
+): string {
+  const base = getPromptForMode(mode, customPrompt || COMPARISON_PROMPT);
+  const legend = labels.map((label, index) => `Image ${index + 1} = ${label}`).join(", ");
+  return `${base} Images provided (${labels.length}): ${legend}.`;
+}
+
+/** Whether a mode expects JSON output unless the caller says otherwise. */
+export function modeImpliesJson(mode: PromptMode): boolean {
+  return JSON_PROMPT_MODES.includes(mode);
 }
