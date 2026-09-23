@@ -44,10 +44,17 @@ import {
 import { errorMessage, isSightlineError, SightlineError } from "./errors.js";
 import {
   ensureDirectory,
+  readBoolEnv,
   readPositiveIntEnv,
   resolveCacheFile,
   resolveWatchFolders,
 } from "./env.js";
+import {
+  ClipboardWatcher,
+  CLIPBOARD_ENV,
+  CLIPBOARD_INTERVAL_ENV,
+  DEFAULT_CLIPBOARD_INTERVAL_MS,
+} from "./clipboard.js";
 import { formatBytes } from "./image-formats.js";
 
 const SERVER_NAME = "sightline-mcp";
@@ -349,6 +356,31 @@ async function main(): Promise<void> {
   const imageWatcher = new ImageWatcher(watchFolders);
   await imageWatcher.start();
 
+  // Clipboard capture is opt-in: a clipboard can hold sensitive material.
+  const clipboardIntervalMs = readPositiveIntEnv(
+    CLIPBOARD_INTERVAL_ENV,
+    DEFAULT_CLIPBOARD_INTERVAL_MS
+  );
+  let clipboardWatcher: ClipboardWatcher | null = null;
+  let clipboardStatus = `off (set ${CLIPBOARD_ENV}=1 to enable)`;
+
+  if (readBoolEnv(CLIPBOARD_ENV, false)) {
+    clipboardWatcher = new ClipboardWatcher({
+      folder: watchFolder,
+      intervalMs: clipboardIntervalMs,
+      onCapture: (image) => {
+        console.error(
+          `[Clipboard] Captured ${image.name} (${formatBytes(image.bytes)}, ${image.mimeType})`
+        );
+        void imageWatcher.refresh();
+      },
+    });
+
+    clipboardStatus = (await clipboardWatcher.start())
+      ? `on (${clipboardWatcher.toolName}, every ${clipboardIntervalMs}ms)`
+      : "requested, but no clipboard tool found (install wl-clipboard or xclip)";
+  }
+
   let backendManager: BackendManager;
   try {
     backendManager = await createBackendManager();
@@ -616,6 +648,7 @@ async function main(): Promise<void> {
     console.error(`[Sightline] Received ${signal}, shutting down.`);
     stopCacheJanitor();
     imageCache.stopPersistence(); // flush pending cache entries before exiting
+    clipboardWatcher?.stop();
     imageWatcher.stop();
     process.exit(0);
   };
@@ -636,6 +669,7 @@ async function main(): Promise<void> {
   console.error(
     `[Sightline] Max image size: ${formatBytes(maxBytes)} (override with ${MAX_IMAGE_BYTES_ENV})`
   );
+  console.error(`[Sightline] Clipboard capture: ${clipboardStatus}`);
 }
 
 main().catch((error) => {

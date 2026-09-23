@@ -8,7 +8,7 @@ Enables vision capabilities for non-vision-capable coding agents via the Model C
 
 When a coding agent runs on a model without vision support, it can't process images that users paste into conversations. Sightline acts as a vision proxy — the agent calls a tool, Sightline sends the image to a vision backend (Gemini API or local Ollama), and returns a text description (or structured JSON) the agent can read.
 
-Seven tools are exposed: `view_image` (analyze one image), `list_images`, `view_latest`, `compare_images` (diff 2-8 images in one call), `crop_image` (extract a region and get it back as an image), `save_image` (store an inline image into the watched folder), and `cache_status` (diagnostics).
+Seven tools are exposed: `view_image` (analyze one image), `list_images`, `view_latest`, `compare_images` (diff 2-8 images in one call), `crop_image` (extract a region and get it back as an image), `save_image` (store an inline image into the watched folder), and `cache_status` (diagnostics). With `SIGHTLINE_CLIPBOARD=1` it can also capture images straight off the clipboard, so copying a screenshot is enough to make it analyzable.
 
 ## Installation
 
@@ -130,6 +130,28 @@ thrash a local model:
 export SIGHTLINE_MAX_CONCURRENT=1    # Backend calls in flight at once (default: 1)
 export SIGHTLINE_MIN_INTERVAL_MS=0   # Minimum spacing between call starts (default: 0)
 ```
+
+### Optional: Clipboard Capture
+
+Copy a screenshot instead of saving it, and Sightline writes it into the watched
+folder for you — so `list_images` and `"latest"` pick it up with no manual save
+step:
+
+```bash
+export SIGHTLINE_CLIPBOARD=1                 # default: 0 (off)
+export SIGHTLINE_CLIPBOARD_INTERVAL_MS=1000  # clipboard poll interval (default: 1000)
+```
+
+Off by default, because a clipboard routinely holds sensitive material
+(passwords, tokens, private messages). When enabled, Sightline polls the
+clipboard and saves newly-copied images as `clipboard-<timestamp>.<ext>` at the
+top level of the watched folder. An image already on the clipboard at startup is
+ignored rather than harvested, and an image that stays on the clipboard is saved
+only once.
+
+Requires a clipboard tool: `wl-paste` (Wayland, from the `wl-clipboard` package)
+or `xclip` (X11, and Wayland through XWayland). If neither is installed, the
+server logs that clipboard capture is unavailable and keeps running normally.
 
 ### Optional: Image Size Limit
 
@@ -608,6 +630,30 @@ Every bad input (unknown mode, missing file, unsupported format like SVG,
 oversized payload, duplicate/undersized comparison) arrives as
 `InvalidParams` with a hint, so the next call can simply be correct.
 
+### 19. Copy a screenshot instead of saving it
+
+With `SIGHTLINE_CLIPBOARD=1`, the manual save step disappears. Copy a screenshot
+anywhere (no Save As dialog), and the server picks it up:
+
+```
+[Clipboard] Captured clipboard-2026-09-23T09-46-18-271.png (1.2 KB, image/png)
+```
+
+Then just ask:
+
+**You:** *"What's on the screenshot I just copied?"*
+
+```
+view_latest()
+→ **Image: clipboard-2026-09-23T09-46-18-271.png** (general mode, via Gemini)
+
+A terminal window showing the failing test run...
+```
+
+The capture is already the newest image in the folder, so `"latest"` refers to
+it with no path juggling. Uses `wl-paste` on Wayland or `xclip` on X11 /
+XWayland.
+
 ## Prompt Modes
 
 Sightline provides preset analysis modes optimized for different use cases:
@@ -699,6 +745,14 @@ Backend calls are serialized through a throttle
 (`SIGHTLINE_MAX_CONCURRENT`, `SIGHTLINE_MIN_INTERVAL_MS`) so a burst of tool
 calls cannot exhaust an API quota or overload a local model.
 
+### Clipboard Capture
+
+An optional clipboard-to-folder bridge: copy an image anywhere and it appears in
+the watched folder as a normal screenshot, ready for `view_latest`. Off by
+default (clipboards hold secrets), deduplicated so a static clipboard is not
+re-saved on every poll, baselined at startup so pre-existing clipboard contents
+are never harvested, and tolerant of reads failing while an application is busy.
+
 ### Watched Folder Integration
 
 Save screenshots to a folder and analyze them without providing paths. The
@@ -733,9 +787,9 @@ live in `test/`, are compiled to `dist-test/`, and cover the pure modules:
 image resolution and validation (including `latest:N`, multi-image requests,
 and region parsing), the LRU cache and its persistent file store, the PNG
 codec and cropping, prompt modes and comparison prompts, backend fallback and
-probing, request throttling, JSON output parsing, the Ollama and Gemini
-clients (with mocked `fetch`), env parsing, and the folder watcher — 115
-tests in total.
+probing, request throttling, JSON output parsing, the clipboard watcher, the
+Ollama and Gemini clients (with mocked `fetch`), env parsing, and the folder
+watcher — 128 tests in total.
 
 ```bash
 npm test
@@ -769,11 +823,12 @@ PNG `crop_image` with region zoom in `view_image`, `save_image`,
 persistent cache across restarts, request throttling, multi-folder watching,
 and tests for the new modules (115 tests).
 
+**Phase 8 (complete):** Clipboard capture - optional clipboard-to-folder bridge
+(`SIGHTLINE_CLIPBOARD`), with `wl-paste`/`xclip` detection, a startup baseline so
+pre-existing clipboard contents are never harvested, and dedupe so a static
+clipboard is saved only once (128 tests).
+
 ## Future Improvements
-
-### Clipboard Monitoring
-
-Auto-detect images copied to clipboard without manual save steps.
 
 ### Additional Backends
 
