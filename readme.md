@@ -91,10 +91,11 @@ export SIGHTLINE_WATCH_FOLDER=/home/user/screenshots
 ```
 
 Multiple folders can be watched at once (comma- and/or platform-delimiter
-separated):
+separated), with `~` expansion so `~/Desktop` resolves to your real home:
 
 ```bash
 export SIGHTLINE_WATCH_FOLDER=/home/user/screenshots,/home/user/downloads
+export SIGHTLINE_WATCH_FOLDER=~/screenshots,~/Downloads/captures
 ```
 
 Default: `~/.sightline/images`. Relative values are resolved against the
@@ -150,8 +151,18 @@ ignored rather than harvested, and an image that stays on the clipboard is saved
 only once.
 
 Requires a clipboard tool: `wl-paste` (Wayland, from the `wl-clipboard` package)
-or `xclip` (X11, and Wayland through XWayland). If neither is installed, the
-server logs that clipboard capture is unavailable and keeps running normally.
+or `xclip` (X11, and Wayland through XWayland). The server prefers `wl-paste`
+and falls back to `xclip`; if neither is installed, it logs that clipboard
+capture is unavailable and keeps running normally. On Wayland, native Wayland
+apps may not expose their clipboard to `xclip`, so install `wl-clipboard` for
+reliable capture:
+
+```bash
+sudo apt install wl-clipboard
+```
+
+Only copy *after* the server is running — an image already on the clipboard at
+startup is baselined and ignored (see above), never harvested.
 
 ### Optional: Image Size Limit
 
@@ -163,38 +174,95 @@ export SIGHTLINE_MAX_IMAGE_BYTES=10485760   # default: 10 MiB
 
 ## Usage with MCP Clients
 
-Add to your MCP client configuration (e.g., Claude Code, OpenCode, Kiro):
+**First build the server** — every client below spawns `dist/index.js`, so it
+must exist:
 
-```json
+```bash
+npm install && npm run build
+```
+
+Configuration lives in the *client's* config file, and the exact shape depends
+on the client: OpenCode uses an `mcp` object with an array `command` and an
+`environment` block, while Claude Desktop / Claude Code (and many others) use
+`mcpServers` with a separate `command`/`args` pair and an `env` block. Use the
+one that matches your client.
+
+### OpenCode
+
+Add to `~/.config/opencode/opencode.json` (global) or an `opencode.json` in
+your project — the two are merged:
+
+```jsonc
 {
-  "mcpServers": {
+  "mcp": {
     "sightline": {
-      "command": "node",
-      "args": ["/path/to/sightline-mcp/dist/index.js"],
-      "env": {
-        "GEMINI_API_KEY": "your_api_key_here"
+      "type": "local",
+      "command": ["node", "/absolute/path/to/sightline-mcp/dist/index.js"],
+      "enabled": true,
+      "environment": {
+        "GEMINI_API_KEY": "{env:GEMINI_API_KEY}",
+        "SIGHTLINE_BACKENDS": "gemini",
+        "SIGHTLINE_WATCH_FOLDER": "~/.sightline/images",
+        "SIGHTLINE_CLIPBOARD": "1"
       }
     }
   }
 }
 ```
 
-For offline/local-only:
+OpenCode substitutes `{env:NAME}` from your shell and `{file:path}` from a
+file, so the API key does not have to sit in the config (see below).
+
+Restart OpenCode, then confirm:
+
+```bash
+opencode mcp list
+# ● ✓ sightline  connected
+```
+
+### Claude Desktop / Claude Code and other `mcpServers` clients
+
+Same idea, different shape — for example in `claude_desktop_config.json`:
 
 ```json
 {
   "mcpServers": {
     "sightline": {
       "command": "node",
-      "args": ["/path/to/sightline-mcp/dist/index.js"],
+      "args": ["/absolute/path/to/sightline-mcp/dist/index.js"],
       "env": {
-        "SIGHTLINE_BACKENDS": "ollama",
-        "OLLAMA_VISION_MODEL": "moondream"
+        "GEMINI_API_KEY": "your_api_key_here",
+        "SIGHTLINE_WATCH_FOLDER": "/home/user/screenshots"
       }
     }
   }
 }
 ```
+
+For a local-only Ollama setup in either format, just change the env object —
+no `GEMINI_API_KEY` needed:
+
+```json
+"SIGHTLINE_BACKENDS": "ollama",
+"OLLAMA_VISION_MODEL": "moondream"
+```
+
+### Verifying it works
+
+1. The server logs its startup state to **stderr** — look for:
+   ```
+   [Sightline] Backends: Gemini (available)
+   [Sightline] Clipboard capture: on (wl-paste, every 1000ms)
+   ```
+2. Ask the agent to run `cache_status()` — it reports the cache plus every backend's live availability.
+3. On OpenCode specifically, `opencode mcp list` must show `sightline` as `connected` — that alone proves the command path, the JSON, and the env block are all correct.
+
+### Keep the API key out of version control
+
+Never commit a `GEMINI_API_KEY`. Prefer an environment variable or a
+`chmod 600` file referenced by substitution (`{env:GEMINI_API_KEY}` or
+`{file:~/.sightline/gemini-key}` with no trailing newline), and rotate any key
+that has ever been pasted into a chat, ticket, issue, or log.
 
 ## Available Tools
 
@@ -317,7 +385,9 @@ analyze in one step.
 - `image` (required): The source image (any accepted form).
 - `region` (required): `x`, `y`, `width`, `height` in pixels from the top-left.
 - `save` (optional): When `true`, also writes the crop to
-  `<watched folder>/derived/` so it becomes a normal watched image.
+  `<watched folder>/derived/`. Note the watcher only indexes the top level of
+  the folder, so reference saved crops by their returned path (or pipe the
+  returned data URI straight into `view_image`) rather than `latest`.
 
 **Example:**
 
@@ -330,9 +400,9 @@ clear message.
 
 ### save_image
 
-Saves an image (data URI or raw base64) into the watched folder so it becomes
-discoverable through `list_images` and the `latest` selector. No analysis is
-performed; the bytes are stored as-is.
+Saves an image (data URI or raw base64) into the top level of the watched
+folder so it becomes discoverable through `list_images` and the `latest`
+selector. No analysis is performed; the bytes are stored as-is.
 
 **Parameters:**
 
@@ -480,7 +550,9 @@ crop_image(image: "./page.png", region: { x: 0, y: 0, width: 800, height: 120 },
 
 The text carries the crop's data URI (pipe it back into `view_image`), the
 image block shows the result, and `save: true` files it under `derived/`
-for later. Source must be PNG.
+for later reference by path. (The watcher indexes only the top level of the
+folder, so saved crops won't become `latest` — `save_image` does that.)
+Source must be PNG.
 
 ### 9. Before/after comparison (visual regression)
 
@@ -770,6 +842,60 @@ Image payloads are validated before they reach a backend: the format is
 detected from magic bytes, the payload is size-checked, and unsupported input
 produces a clear `InvalidParams` error instead of a confusing backend failure.
 
+## Production Readiness
+
+**Verdict: production-ready for a personal/local coding-agent deployment**
+(running the server under your own user account for your own agent), with
+deliberate boundaries you should know about.
+
+### What makes it ready
+
+- **Type safety:** strict `tsc` passes on both the source and the test
+  projects, with `noUnusedLocals`/`noUnusedParameters` on.
+- **Tested:** 130 `node:test` tests (zero extra dependencies) covering every
+  pure module, plus a 43-check stdio end-to-end run against a fake backend —
+  and a 10-check end-to-end run against the real clipboard — that must all
+  pass before every commit.
+- **Handles abuse gracefully:** typed `SightlineError`s map to the correct
+  JSON-RPC codes (bad input → `-32602`, failure → `-32603`, unknown tool →
+  `-32601`); oversized payloads, missing files, and unsupported formats are
+  rejected before any backend call; throttling caps backend concurrency; the
+  filesystem watcher and clipboard reader log and recover instead of crashing.
+- **Observable:** startup logs backend availability, watch folders, cache
+  state, and clipboard status; `cache_status` exposes cache and backend
+  health mid-session.
+- **Robust inputs:** `~` expansion on every configured path, multi-folder
+  watching, `latest:N` history access, and re-scanning on every call so a
+  missed filesystem event can never produce a stale list.
+
+### What it deliberately is not
+
+- **Local trust model only.** The server reads any image file the OS user can
+  read, and any local process that can spawn it can use it. Do not expose it
+  on a network socket or run it as a shared multi-user service without adding
+  authentication and path sandboxing — there is none.
+- **Single-process state.** The in-memory cache (and thus hit counters) live
+  per process; two instances pointed at the same cache file will overwrite
+  each other (last writer wins).
+- **One watched `~/.sightline/cache.json` lock-free file.** Crash-safe
+  (atomic rename, validated on load, corrupt files ignored), but not a
+  database — don't point concurrent writers at it.
+- **Clipboard capture is best-effort.** Polling means ~1 s latency; native
+  Wayland apps need `wl-clipboard` installed; the server cannot see images
+  inside apps that never put bytes on the clipboard or the filesystem (such
+  chat attachments stay where they are).
+
+### Operational checklist
+
+1. `npm run build` after every update, then restart the MCP client so it
+   spawns the new `dist/index.js`.
+2. Watch stderr once at startup: backends showing `available`, folders
+   resolved to real absolute paths, clipboard status as expected.
+3. Keep `GEMINI_API_KEY` in an env var or a `chmod 600` file with
+   `{env:}`/`{file:}` substitution — never in version control.
+4. Copy *after* the server starts for clipboard captures; quote the startup
+   baseline rule to anyone confused by a stale `latest`.
+
 ## Development
 
 ```bash
@@ -788,8 +914,8 @@ image resolution and validation (including `latest:N`, multi-image requests,
 and region parsing), the LRU cache and its persistent file store, the PNG
 codec and cropping, prompt modes and comparison prompts, backend fallback and
 probing, request throttling, JSON output parsing, the clipboard watcher, the
-Ollama and Gemini clients (with mocked `fetch`), env parsing, and the folder
-watcher — 128 tests in total.
+Ollama and Gemini clients (with mocked `fetch`), env parsing (including `~`
+expansion), and the folder watcher — 130 tests in total.
 
 ```bash
 npm test
@@ -825,8 +951,9 @@ and tests for the new modules (115 tests).
 
 **Phase 8 (complete):** Clipboard capture - optional clipboard-to-folder bridge
 (`SIGHTLINE_CLIPBOARD`), with `wl-paste`/`xclip` detection, a startup baseline so
-pre-existing clipboard contents are never harvested, and dedupe so a static
-clipboard is saved only once (128 tests).
+pre-existing clipboard contents are never harvested, dedupe so a static
+clipboard is saved only once, and `~` expansion on every configured path
+(130 tests).
 
 ## Future Improvements
 

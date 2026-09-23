@@ -45,12 +45,26 @@ export function readPositiveIntEnv(
 }
 
 /**
+ * Expand a leading `~` to the user's home directory so values like
+ * `~/screenshots` work in environment configuration. Without this,
+ * `path.resolve("~/screenshots")` would produce a literal `~/screenshots`
+ * folder under the current working directory.
+ */
+export function expandHomePath(filePath: string): string {
+  if (filePath === "~") return homedir();
+  if (filePath.startsWith("~/") || filePath.startsWith("~\\")) {
+    return join(homedir(), filePath.slice(2));
+  }
+  return filePath;
+}
+
+/**
  * Resolve the watched folder from the environment. Always returns an absolute
- * path, and falls back to `~/.sightline/images` when unset.
+ * path (expanding `~`), and falls back to `~/.sightline/images` when unset.
  */
 export function resolveWatchFolder(env: EnvLike = process.env): string {
   const configured = readOptionalEnv("SIGHTLINE_WATCH_FOLDER", env);
-  return configured ? resolve(configured) : DEFAULT_WATCH_FOLDER;
+  return configured ? resolve(expandHomePath(configured)) : DEFAULT_WATCH_FOLDER;
 }
 
 /**
@@ -106,13 +120,15 @@ export function parsePathList(value: string): string[] {
 
 /**
  * Resolve the watched folders from the environment. Always returns absolute
- * paths, and falls back to `~/.sightline/images` when unset.
+ * paths (expanding `~`), and falls back to `~/.sightline/images` when unset.
  */
 export function resolveWatchFolders(env: EnvLike = process.env): string[] {
   const configured = readOptionalEnv("SIGHTLINE_WATCH_FOLDER", env);
   if (!configured) return [DEFAULT_WATCH_FOLDER];
 
-  const folders = parsePathList(configured).map((folder) => resolve(folder));
+  const folders = parsePathList(configured)
+    .map((folder) => resolve(expandHomePath(folder)))
+    .filter((folder) => folder.length > 0);
   return folders.length > 0 ? folders : [DEFAULT_WATCH_FOLDER];
 }
 
@@ -121,7 +137,7 @@ export function resolveWatchFolders(env: EnvLike = process.env): string[] {
  */
 export function resolveCacheFile(env: EnvLike = process.env): string {
   const configured = readOptionalEnv("SIGHTLINE_CACHE_FILE", env);
-  return configured ? resolve(configured) : DEFAULT_CACHE_FILE;
+  return configured ? resolve(expandHomePath(configured)) : DEFAULT_CACHE_FILE;
 }
 
 /**

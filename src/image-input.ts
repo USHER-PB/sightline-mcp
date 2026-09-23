@@ -1,6 +1,6 @@
 import { readFile, stat } from "fs/promises";
-import { homedir } from "os";
-import { basename, join, resolve as resolvePath } from "path";
+import { basename, resolve as resolvePath } from "path";
+import { expandHomePath } from "./env.js";
 import { errorMessage, SightlineError } from "./errors.js";
 import { CropRegion } from "./png.js";
 import {
@@ -104,7 +104,7 @@ export async function resolveImageInput(
     }
   }
 
-  return readImageFile(expandHome(raw), maxBytes, "file");
+  return readImageFile(expandHomePath(raw), maxBytes, "file");
 }
 
 /**
@@ -313,14 +313,6 @@ async function readImageFile(
     source,
     label: basename(absolutePath),
   };
-}
-
-function expandHome(filePath: string): string {
-  if (filePath === "~") return homedir();
-  if (filePath.startsWith("~/") || filePath.startsWith("~\\")) {
-    return join(homedir(), filePath.slice(2));
-  }
-  return filePath;
 }
 
 function assertWithinLimit(bytes: number, maxBytes: number, label: string): void {
