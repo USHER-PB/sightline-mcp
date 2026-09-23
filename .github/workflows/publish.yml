@@ -1,0 +1,60 @@
+# Publish to npm and GHCR when a GitHub Release is published.
+#
+# One-time npm setup (choose ONE):
+#   npm login
+#   # - or - trusted publishing: link https://www.npmjs.com/package/sightline-mcp
+#   #   Settings > Publishing > GitHub Actions to USHER-PB/sightline-mcp,
+#   #   then delete the NPM_TOKEN lines below. OIDC needs no stored secret.
+#
+# Keep the package.json version in sync with the release tag before releasing.
+name: Publish
+
+on:
+  release:
+    types: [published]
+
+jobs:
+  npm:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write # required for --provenance
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          registry-url: https://registry.npmjs.org
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm test
+      - run: npm publish --provenance --access public
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+  docker:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/metadata-action@v5
+        id: meta
+        with:
+          images: ghcr.io/usher-pb/sightline-mcp
+          tags: |
+            type=raw,value=latest
+            type=semver,pattern={{version}}
+      - uses: docker/login-action@v5
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}

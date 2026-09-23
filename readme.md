@@ -12,10 +12,87 @@ Seven tools are exposed: `view_image` (analyze one image), `list_images`, `view_
 
 ## Installation
 
+Five ways to run it, fastest first. Every method runs the same code:
+
+### 1. `npx` (recommended for most people)
+
+No clone, no build. `npx` fetches the package from npm and runs it:
+
 ```bash
+npx -y sightline-mcp
+```
+
+Then point your MCP client at it (OpenCode example — see
+[Usage with MCP Clients](#usage-with-mcp-clients) for the others):
+
+```jsonc
+{
+  "mcp": {
+    "sightline": {
+      "type": "local",
+      "command": ["npx", "-y", "sightline-mcp"],
+      "enabled": true,
+      "environment": { "GEMINI_API_KEY": "{env:GEMINI_API_KEY}" }
+    }
+  }
+}
+```
+
+### 2. Global npm install
+
+```bash
+npm install -g sightline-mcp
+sightline-mcp              # on your PATH via the bin entry
+```
+
+### 3. Docker
+
+The image is stdio-based and stateless; configuration comes from env vars,
+and host folders are mounted where the server expects them:
+
+```bash
+docker run -i --rm \
+  -e GEMINI_API_KEY=... \
+  -e SIGHTLINE_WATCH_FOLDER=/data/images \
+  -e SIGHTLINE_CACHE_FILE=/data/sightline/cache.json \
+  -v ~/screenshots:/data/images \
+  -v ~/.sightline:/data/sightline \
+  ghcr.io/usher-pb/sightline-mcp
+```
+
+Clipboard capture is off automatically in Docker (no display to read from);
+point `SIGHTLINE_WATCH_FOLDER` at a mounted host folder instead.
+
+### 4. From source (contributors, offline machines)
+
+```bash
+git clone https://github.com/USHER-PB/sightline-mcp.git
+cd sightline-mcp
 npm install
 npm run build
+node dist/index.js
 ```
+
+### 5. Registry (Smithery)
+
+Smithery gives the server one-click discovery plus a config UI. Two routes,
+per [their publish docs](https://smithery.ai/new):
+
+- **Local (stdio) servers:** package an `.mcpb` bundle following Anthropic's
+  [MCPB guide](https://claude.com/docs/connectors/building/mcpb) — the bundle
+  carries the built `dist/`, a start command of `node dist/index.js`, and the
+  same env knobs listed above — then publish it:
+  ```bash
+  smithery mcp publish ./server.mcpb -n <your-org>/sightline-mcp
+  ```
+- **Hosted servers:** register a public HTTPS URL serving Streamable HTTP.
+  This binary speaks stdio only, so that route needs an HTTP wrapper first
+  (out of scope here).
+
+Either way, clipboard capture needs a display, so it stays off in hosted
+runtimes and in any sandboxed install.
+
+## Configuration
 
 ## Configuration
 
